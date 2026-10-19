@@ -35,8 +35,8 @@ function suggest() {
   else if (/heads or tails/i.test(last)) options = ["heads", "tails"];
   else if (/rock, paper, or scissors/i.test(last)) options = ["rock", "paper", "scissors"];
   else if (/yes.*no|sell the car\?|buy a lawyer\?/i.test(last)) options = ["yes", "no"];
-  else if (/\[\d+-\d+\]$/.test(last)) {
-    const [,lo,hi] = last.match(/\[(\d+)-(\d+)\]$/);
+  else if (/\[\d+-\d+\]:?\s*$/.test(last)) {
+    const [,lo,hi] = last.match(/\[(\d+)-(\d+)\]:?\s*$/);
     if (+hi - +lo <= 5) options = Array.from({length:+hi-+lo+1},(_,i)=>String(+lo+i));
   } else if (/mind-reading helmet/.test(context)) options = ["1", "2", "3"];
   for (const value of options) {
@@ -62,6 +62,9 @@ function updateStats(money, state) {
   document.getElementById("cash").textContent = "$" + money.toLocaleString("en-US");
   document.getElementById("turn").textContent = state.turn;
   document.getElementById("rep").textContent = state.reputation + " / 100";
+  document.getElementById("home").textContent = state.houseValue ? "$" + state.houseValue.toLocaleString("en-US") : "None";
+  document.getElementById("business").textContent = state.hasStartup ? "$" + state.startupValue.toLocaleString("en-US") : "None";
+  document.getElementById("peak").textContent = "$" + state.peakCash.toLocaleString("en-US");
 }
 async function main() {
   const state = createState();
@@ -82,24 +85,35 @@ async function main() {
     richUncle, casino, richGirl, shadyBusiness, bankRobbery, sharkTank, stockInsider,
     gameShow, mysteriousBox, timeMachine, alienInvestment, evilTwin, billionaireBet];
   updateStats(money, state);
-  while (money > 0 && money < 999999999) {
+  let finishedAsWinner = false;
+  while (money > 0) {
     write("── TURN " + (state.turn + 1) + " ──", "separator");
     const choice = chooseEvent(state);
-    money = choice < 19 ? await events[choice](money, io, state) : await play(choice - 19, money, io, state);
-    // Avoid Java's signed-int overflow on huge wins (especially Tim's square).
-    money = Math.max(0, Math.min(2147483647, Math.trunc(money)));
+    money = choice < 19 ? await events[choice](money, io, state)
+      : choice < 39 ? await play(choice - 19, money, io, state)
+      : await EXTRA_EVENTS[choice - 39].fn(money, io, state);
+    // Keep whole dollars exact up to JavaScript's safe-integer ceiling.
+    money = cashLimit(money);
     money = advanceTurn(money, state);
     updateStats(money, state);
     money = await rescueFromBankruptcy(money, io, state);
+    state.peakCash = Math.max(state.peakCash, money);
     printStatus(money, state);
     updateStats(money, state);
     write("You now have " + money + " dollars");
-    if (money <= 0 || money >= 999999999) break;
+    if (money <= 0) break;
+    if (await victoryDecision(money, io, state)) { finishedAsWinner = true; break; }
+    if (state.endless) document.getElementById("result").textContent = "beyond the billion — keep going";
+    if (money === Number.MAX_SAFE_INTEGER) {
+      write("You reached the exact-number limit: $9,007,199,254,740,991. Your empire has conquered JavaScript!");
+      finishedAsWinner = true; break;
+    }
     write("type next to move on!");
     while ((await io.read()).trim().toLowerCase() !== "next") write("type next to move on!");
   }
-  write(money > 0 ? "Good work! You beat the game" : "You lost bum", "separator");
-  document.getElementById("result").textContent = money > 0 ? "you won!" : "game over";
+  write(finishedAsWinner ? "Good work! You beat the game" : "You lost bum", "separator");
+  write("Highest cash balance: $" + state.peakCash.toLocaleString("en-US"));
+  document.getElementById("result").textContent = finishedAsWinner ? "you won!" : "game over";
   write("Press Restart to play again.");
   answer.disabled = true; sendButton.disabled = true;
 }

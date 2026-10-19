@@ -4,7 +4,7 @@
 function parseInteger(value) {
   if (!/^[+-]?\d+$/.test(value)) throw new Error("Not a whole number");
   const n = Number(value);
-  if (!Number.isInteger(n) || n < -2147483648 || n > 2147483647) throw new Error("Out of range");
+  if (!Number.isInteger(n) || !Number.isSafeInteger(n)) throw new Error("Out of range");
   return n;
 }
 function createState() { return {
@@ -13,7 +13,12 @@ function createState() { return {
   stockPrice: 100,
   shares: 0,
   cars: 0,
-  houseValue: 0, // Set this when a future event awards a house.
+  houseValue: 0,
+  houseName: "", houseCost: 0, houseShield: false,
+  efficiency: 1, products: 0,
+  campaigning: false, campaignFunds: 0, campaignSpend: 0, support: 0,
+  campaignTurns: 0, office: 0, targetOffice: 0, officeTurns: 0, heat: 0,
+  won: false, endless: false, peakCash: 100,
   hasStartup: false,
   startupName: "",
   startupValue: 2000,
@@ -625,18 +630,13 @@ function createState() { return {
         let change = Math.trunc(Math.random() * 41) - 20;
         s.stockPrice = Math.max(5, Math.min(5000, s.stockPrice + change));
         s.angelPrice = Math.max(5, Math.min(5000, s.angelPrice + Math.trunc(Math.random() * 41) - 20));
-        if (s.hasStartup && s.employees > 0) {
-            let payroll = s.employees * 30;
-            let paid = Math.min(money, payroll);
-            money = take(money, payroll);
-            write("Payroll: -$" + paid + " (" + s.employees + " employees)");
-        }
+        if (s.hasStartup) money = companyIncome(money, s);
         if (s.debt > 0 && s.turn % 3 == 0) {
             let interest = Math.max(1, Math.trunc(s.debt / 20));
             s.debt = safeAdd(s.debt, interest);
             write("Bank interest accrued: +$" + interest + " debt.");
         }
-        return money;
+        return extendedTurn(money, s);
     }
 
     function printStatus(money, s) {
@@ -646,6 +646,7 @@ function createState() { return {
         if (s.hasStartup) write(s.startupName + ": " + s.ownership + "% ownership | value $" + s.startupValue
                 + " | employees " + s.employees + " | quality " + s.productQuality + " | patent " + s.patent);
         else write("Startup: none");
+        extendedStatus(s);
         write("Cars: " + s.cars + " ($10,000 each) | House value: $" + s.houseValue);
         write("Insurance: " + s.insured + " | Evidence: " + s.evidence + " | Lawsuit risk: " + s.lawsuitRisk);
         write("==================================\n");
@@ -702,7 +703,7 @@ function createState() { return {
         if (money <= 0) return 0;
         return (await pick(input, "How much cash? (max $" + money + ")", 0, money));
     }
-    function safeAdd(a, b) { return Math.trunc(Math.max(0, Math.min(2147483647, a + b))); }
+    function safeAdd(a, b) { return Math.trunc(Math.max(0, Math.min(Number.MAX_SAFE_INTEGER, a + b))); }
     function take(a, b) { return Math.trunc(Math.max(0, a - Math.max(0, b))); }
     function reputation(s, delta) { s.reputation = Math.max(0, Math.min(100, s.reputation + delta)); }
     function chance(probability) { return Math.random() < probability; }
@@ -771,7 +772,7 @@ function createState() { return {
         write("Name your startup: ");
         let name = (await input.read()).trim();
         s.startupName = (name.length === 0) ? "SockGPT" : name;
-        s.hasStartup = true; s.startupValue = 2000; s.ownership = 100;
+        s.hasStartup = true; s.startupValue = 15000; s.efficiency = 1; s.products = 0; s.ownership = 100;
         s.employees = 0; s.productQuality = 1; s.patent = false;
         write(s.startupName + " is incorporated! You own 100%.");
         return take(money, 500);
@@ -782,7 +783,7 @@ function createState() { return {
         if (!s.hasStartup) { write("\nVC says: 'Bring me a company first.'"); return money; }
         write("\nA VC wants to invest in " + s.startupName + ".");
         write("Your reputation " + s.reputation + ", employees " + s.employees + ", patent " + s.patent);
-        let offer = 1500 + s.reputation * 30 + s.employees * 200 + (s.patent ? 5000 : 0);
+        let offer = Math.floor(s.startupValue * .2) + s.reputation * 100 + s.employees * 500 + (s.patent ? 15000 : 0);
         let equity = s.reputation >= 70 ? 15 : 30;
         write("Offer: $" + offer + " for " + equity + "% of YOUR current stake.");
         if (!(await yes(input, "Accept?"))) { s.investorTrust--; return money; }
@@ -818,9 +819,10 @@ function createState() { return {
         money = take(money, cost);
         let success = .25 + s.productQuality * .10 + s.employees * .03 + (choice == 2 ? .20 : 0);
         if (chance(Math.min(.95, success))) {
-            let revenue = 1500 + s.employees * 300 + s.publicity * 400;
+            s.products++;
+            let revenue = Math.floor((5000 + s.employees * 1500 + s.publicity * 2000) * s.productQuality * s.efficiency);
             write("SELLS OUT! Revenue: $" + revenue);
-            s.startupValue = safeAdd(s.startupValue, revenue);
+            s.startupValue = safeAdd(s.startupValue, revenue * 3);
             reputation(s, 12);
             return safeAdd(money, revenue);
         }
@@ -875,6 +877,7 @@ function createState() { return {
         let value = ownershipPayout(s);
         write("Your stake's paper valuation: $" + value);
         if (!(await yes(input, "Sell half of your personal stake at this valuation?"))) { reputation(s, 5); return money; }
+        if (s.ownership <= 0) { write("You have no shares left to sell."); return money; }
         let soldPercentage = Math.max(1, Math.trunc(s.ownership / 2));
         let proceeds = Math.trunc(s.startupValue * soldPercentage / 100);
         s.ownership -= soldPercentage;
@@ -906,7 +909,7 @@ function createState() { return {
         if (!(await yes(input, "Accept?"))) { s.investorTrust++; write("You hold out for more."); return money; }
         money = safeAdd(money, offer);
         s.hasStartup = false; s.startupName = ""; s.startupValue = 2000; s.ownership = 100;
-        s.employees = 0; s.productQuality = 0; s.patent = false; s.publicity = 0;
+        s.employees = 0; s.productQuality = 0; s.patent = false; s.publicity = 0; s.products = 0; s.efficiency = 1;
         reputation(s, 8);
         write("EXIT COMPLETE! You can found another startup later.");
         return money;
@@ -1050,6 +1053,9 @@ function eventPool(s) {
         const weight = eventId === 3 ? 4 : 1;
         for (let ticket = 0; ticket < weight; ticket++) pool.push(choice);
     }
+    EXTRA_EVENTS.forEach((event, i) => {
+        if (event.eligible(s)) for (let j = 0; j < (event.weight || 1); j++) pool.push(39 + i);
+    });
     return pool;
 }
 function chooseEvent(s) {
@@ -1096,10 +1102,263 @@ async function rescueFromBankruptcy(money, input, s) {
             write("Sold one car for $10,000.");
         } else if (asset.kind === "house") {
             money = safeAdd(money, s.houseValue);
-            s.houseValue = 0;
+            clearHouse(s);
             write("Sold your house for $" + money + ".");
         }
         write("You have cash again — you're still in the game!");
     }
     return money;
+}
+
+// Expansion: houses, fictional politics, company management and strange luck.
+const HOUSE_CATALOG = [
+    {name:"Suspicious shed", price:2500}, {name:"Tiny house on wheels", price:10000},
+    {name:"Haunted starter cottage", price:35000}, {name:"Suburban family home", price:100000},
+    {name:"Downtown penthouse", price:350000}, {name:"Mansion with a moat", price:1000000}
+];
+const OFFICES = [null, {name:"Town council", fee:500, salary:500, difficulty:.05},
+    {name:"Mayor", fee:5000, salary:5000, difficulty:.15},
+    {name:"Governor", fee:50000, salary:50000, difficulty:.25}];
+function cashLimit(n) { return Math.max(0, Math.min(Number.MAX_SAFE_INTEGER, Math.floor(n))); }
+function clearHouse(s) { s.houseValue = 0; s.houseCost = 0; s.houseName = ""; s.houseShield = false; }
+function companyIncome(money, s) {
+    const demand = Math.max(.1, s.reputation / 100);
+    const revenue = Math.floor((80 + s.products * 400) * Math.max(1, s.employees) *
+        s.productQuality * s.efficiency * demand * (1 + s.publicity * .15));
+    const costs = s.employees * 30 + 50;
+    const profit = revenue - costs;
+    // Owner receives their share of profit; losses remain the player's responsibility.
+    const dividend = Math.floor(Math.max(0, profit) * s.ownership / 100);
+    money = profit >= 0 ? safeAdd(money, dividend) : take(money, -profit);
+    s.startupValue = safeAdd(s.startupValue, Math.max(0, profit) * 4);
+    write("Company: revenue $" + revenue + ", costs $" + costs + ", your payout $" + dividend +
+        (profit < 0 ? "; you cover a $" + (-profit) + " loss." : "."));
+    return money;
+}
+function extendedStatus(s) {
+    if (s.houseValue) write("Home: " + s.houseName + " | market value $" + s.houseValue + " | disaster protection " + s.houseShield);
+    if (s.hasStartup) write("Products: " + s.products + " | efficiency " + s.efficiency.toFixed(2));
+    if (s.campaigning) write("Campaign: " + OFFICES[s.targetOffice].name + " | " + s.campaignTurns + " turns until election | funds $" + s.campaignFunds + " | spent $" + s.campaignSpend + " | support " + s.support);
+    if (s.office) write("Office: " + OFFICES[s.office].name + " | term remaining " + s.officeTurns);
+    if (s.heat) write("Corruption heat: " + s.heat + "/100 (investigations can happen after leaving office)");
+}
+function electionOdds(s) {
+    const target = OFFICES[s.targetOffice];
+    const funding = Math.min(.30, s.campaignSpend / (target.fee * 20) * .30);
+    return Math.max(.05, Math.min(.95, .25 + s.reputation / 200 + s.support / 200 + funding - target.difficulty));
+}
+function extendedTurn(money, s) {
+    if (s.houseValue > 0) {
+        s.houseValue = Math.max(100, cashLimit(s.houseValue * (.95 + Math.random() * .10)));
+        const upkeep = Math.max(1, Math.floor(s.houseCost * .001));
+        money = take(money, upkeep);
+        write("Home market value: $" + s.houseValue + ". Upkeep: $" + upkeep + ".");
+    }
+    if (s.office) {
+        money = safeAdd(money, OFFICES[s.office].salary);
+        write("Office salary: +$" + OFFICES[s.office].salary);
+        if (--s.officeTurns <= 0) { write("Your term is over. The office chair misses you already."); s.office = 0; }
+    }
+    if (s.campaigning && --s.campaignTurns <= 0) {
+        const odds = electionOdds(s);
+        write("ELECTION NIGHT! Your win chance was " + Math.round(odds * 100) + "%.");
+        if (chance(odds)) { s.office = s.targetOffice; s.officeTurns = 12; reputation(s, 10); write("YOU WIN! You are now " + OFFICES[s.office].name + " for 12 turns."); }
+        else { reputation(s, -5); write("You lost. Your opponent's slogan was just a picture of a dog."); }
+        s.campaigning = false; s.campaignFunds = 0; s.campaignSpend = 0; s.support = 0; s.targetOffice = 0;
+        write("Campaign accounts are closed. Unspent donations do not become personal cash.");
+    }
+    if (s.heat > 0 && chance(s.heat / 250)) {
+        const fine = Math.max(500, Math.floor(money * .35));
+        money = take(money, fine); reputation(s, -25);
+        s.office = 0; s.officeTurns = 0; s.campaigning = false;
+        s.campaignFunds = 0; s.campaignSpend = 0; s.campaignTurns = 0; s.targetOffice = 0; s.support = 0;
+        s.heat = Math.max(0, s.heat - 50);
+        write("CORRUPTION INVESTIGATION! Fine: $" + fine + ". You lose any office or candidacy. Reputation -25.");
+    } else s.heat = Math.max(0, s.heat - 1);
+    return cashLimit(money);
+}
+function addHeat(s, amount) { s.heat = Math.min(100, s.heat + amount); }
+async function buyHouse(money, input, s) {
+    write("OPEN HOUSE DAY. The realtor insists all the ghosts are load-bearing.");
+    HOUSE_CATALOG.forEach((h,i)=>write((i+1)+" - "+h.name+": $"+h.price+" (upkeep $"+Math.max(1,Math.floor(h.price*.001))+"/turn)"));
+    const choice = await pick(input,"Choose a home; 0 to pass",0,HOUSE_CATALOG.length);
+    if (!choice) return money;
+    const h = HOUSE_CATALOG[choice-1];
+    if (money < h.price) { write("You cannot afford that home. No purchase made."); return money; }
+    s.houseName=h.name; s.houseValue=h.price; s.houseCost=h.price; s.houseShield=false;
+    write("You bought "+h.name+"! Its value changes each turn. You can sell during a sale event or at zero cash.");
+    return take(money,h.price);
+}
+async function sellHouse(money,input,s) {
+    write("A buyer offers $"+s.houseValue+" for your "+s.houseName+". They ask whether the ghosts pay rent.");
+    if (!await yes(input,"Sell your home?")) return money;
+    money=safeAdd(money,s.houseValue);clearHouse(s);write("House sold. No more upkeep.");return money;
+}
+async function renovateHouse(money,input,s) {
+    const scale=Math.max(250,Math.floor(s.houseValue*.10));
+    const choices=[{name:"Paint and landscaping",cost:scale,boost:1.15},
+        {name:"Kitchen remodel",cost:scale*3,boost:1.3},
+        {name:"Extra room",cost:scale*6,boost:1.4}];
+    write("RENOVATION TIME. A contractor promises to arrive sometime this century.");
+    choices.forEach((x,i)=>write((i+1)+" - "+x.name+": $"+x.cost+"; value rises by $"+Math.floor(x.cost*x.boost)));
+    const choice=await pick(input,"Choose; 0 to pass",0,3);if(!choice)return money;
+    const x=choices[choice-1];if(money<x.cost){write("Not enough cash.");return money;}
+    s.houseValue=safeAdd(s.houseValue,Math.floor(x.cost*x.boost));write("Renovation complete. New home value: $"+s.houseValue);
+    return take(money,x.cost);
+}
+async function leakyPipes(money,input,s) {
+    const repair=Math.max(100,Math.floor(s.houseValue*.03));
+    write("Your pipes now identify as an indoor waterfall. Repair cost: $"+repair+".");
+    if(await yes(input,"Pay for a plumber?")) {
+        if(money>=repair){write("Fixed! The plumber also rescued a rubber duck.");return take(money,repair);}
+        write("You cannot afford the repair.");
+    }
+    s.houseValue=Math.max(100,Math.floor(s.houseValue*.85));write("Water damage reduces your home's value by 15%.");return money;
+}
+async function homeDisaster(money,input,s) {
+    const disasters=["A tornado relocates your roof to another postcode.","A flood turns your living room into an aquarium.","An earthquake rearranges your floor plan."];
+    write(disasters[Math.floor(Math.random()*disasters.length)]);
+    if(s.houseShield){s.houseShield=false;write("Your disaster coverage pays for repairs! Policy used up.");return money;}
+    const repair=Math.max(250,Math.floor(s.houseValue*.12));
+    if(await yes(input,"Spend $"+repair+" on emergency repairs to protect the home's value?")){
+        if(money>=repair)return take(money,repair);write("You cannot afford it.");
+    }
+    s.houseValue=Math.max(100,Math.floor(s.houseValue*.60));write("Unrepaired damage cuts home value by 40%.");return money;
+}
+async function homeInsurance(money,input,s){
+    const cost=Math.max(100,Math.floor(s.houseValue*.02));
+    write("One-disaster home coverage: $"+cost+". Covers natural disasters, not leaky pipes.");
+    if(await yes(input,"Buy coverage?")){if(money<cost){write("Not enough cash.");return money;}s.houseShield=true;return take(money,cost);}return money;
+}
+async function neighborhood(money,input,s){
+    if(chance(.5)){s.houseValue=cashLimit(s.houseValue*1.25);write("A fancy coffee shop opens nearby. Your house is worth 25% more because of oat milk.");}
+    else{s.houseValue=Math.max(100,Math.floor(s.houseValue*.8));write("A competitive bagpipe academy moves next door. Home value falls 20%.");}return money;
+}
+async function runForOffice(money,input,s){
+    write("The ballot is open. All parties agree that your campaign poster is weird.");
+    OFFICES.slice(1).forEach((o,i)=>write((i+1)+" - "+o.name+": filing $"+o.fee+", salary $"+o.salary+"/turn if elected"));
+    const choice=await pick(input,"Choose office; 0 to pass",0,3);if(!choice)return money;
+    if(money<OFFICES[choice].fee){write("You cannot afford the filing fee.");return money;}
+    s.targetOffice=choice;s.campaigning=true;s.campaignTurns=7;s.support=0;s.campaignFunds=0;s.campaignSpend=0;
+    write("You filed! Six more event turns after this one until election night. Raise donations, spend on campaigning, or win support in debates.");
+    return take(money,OFFICES[choice].fee);
+}
+async function campaignFundraiser(money,input,s){
+    write("CAMPAIGN FUNDRAISER: the finger sandwiches have their own lobbyist.");
+    const choice=await pick(input,"1 Grassroots donations | 2 Shady mega-donor (corruption risk) | 3 Pass",1,3);
+    if(choice===3)return money;
+    const raised=choice===1?Math.floor(OFFICES[s.targetOffice].fee*(1+s.reputation/50)):OFFICES[s.targetOffice].fee*10;
+    s.campaignFunds=safeAdd(s.campaignFunds,raised);if(choice===2)addHeat(s,20);else s.support=Math.min(100,s.support+5);
+    write("Raised $"+raised+" in campaign-only funds. Spend them in the campaign event.");return money;
+}
+async function campaignSpending(money,input,s){
+    write("CAMPAIGN HQ. Donations available: $"+s.campaignFunds+". Personal cash: $"+money);
+    const choice=await pick(input,"1 Spend campaign donations | 2 Spend personal cash | 3 Pass",1,3);if(choice===3)return money;
+    const available=choice===1?s.campaignFunds:money;
+    const amount=await pick(input,"How much to spend on campaigning?",0,available);
+    if(choice===1)s.campaignFunds-=amount;else money=take(money,amount);
+    s.campaignSpend=safeAdd(s.campaignSpend,amount);
+    write("Advertising purchased. Current estimated win chance: "+Math.round(electionOdds(s)*100)+"% (maximum 95%).");return money;
+}
+async function debateNight(money,input,s){
+    write("DEBATE NIGHT: your opponent promises free Wi-Fi for pigeons.");
+    const choice=await pick(input,"1 Thoughtful speech | 2 Insult the pigeons | 3 Dance",1,3);
+    if(choice===1||chance(.4)){s.support=Math.min(100,s.support+15);write("The crowd loves you! Support +15.");}
+    else{s.support=Math.max(0,s.support-10);reputation(s,-5);write("Your clip goes viral for the wrong reasons. Support -10.");}return money;
+}
+async function bribePolitician(money,input,s){
+    const cost=Math.max(250,Math.floor(money*.05));
+    write("A fictional politician offers a suspicious 'business grant' worth $"+(cost*4)+" for $"+cost+". 60% chance of payment; corruption heat +25 either way.");
+    if(!await yes(input,"Offer the bribe?"))return money;if(money<cost){write("Not enough cash.");return money;}
+    money=take(money,cost);addHeat(s,25);
+    if(chance(.6)){write("Grant approved. Auditors may have questions later.");return safeAdd(money,cost*4);}
+    write("The politician keeps your money and blocks your number.");return money;
+}
+async function acceptBribe(money,input,s){
+    const offer=OFFICES[s.office].salary*20;
+    write("A developer offers you $"+offer+" to overlook a suspicious project. Accepting adds 35 corruption heat.");
+    if(await yes(input,"Accept the bribe?")){addHeat(s,35);reputation(s,-5);return safeAdd(money,offer);}
+    reputation(s,8);write("You refuse. Voters are pleasantly confused by your integrity.");return money;
+}
+async function passPolicy(money,input,s){
+    write("POLICY DAY. Your staff asks if 'make me richer' counts as a manifesto.");
+    write("1 Public parks: reputation +10. 2 Self-serving property rezoning: home value +30%, heat +25.");
+    write("3 Award yourself a consulting contract: +$"+(OFFICES[s.office].salary*12)+", heat +35. 4 Pass.");
+    const choice=await pick(input,"Choose policy",1,4);
+    if(choice===1)reputation(s,10);
+    if(choice===2){if(!s.houseValue){write("You own no property to benefit. No policy passed.");return money;}s.houseValue=cashLimit(s.houseValue*1.3);addHeat(s,25);}
+    if(choice===3){addHeat(s,35);return safeAdd(money,OFFICES[s.office].salary*12);}return money;
+}
+async function reinvestCompany(money,input,s){
+    const cost=Math.max(500,Math.floor(s.startupValue*.03));
+    write("Invest $"+cost+" in your company. Better quality and efficiency increase recurring profits.");
+    const choice=await pick(input,"1 R&D: quality +2 | 2 Automation: efficiency +0.5 | 3 Pass",1,3);if(choice===3)return money;
+    if(money<cost){write("Not enough cash.");return money;}
+    if(choice===1)s.productQuality+=2;else s.efficiency+=.5;
+    s.startupValue=safeAdd(s.startupValue,cost*2);return take(money,cost);
+}
+async function companyContract(money,input,s){
+    const cost=Math.max(500,Math.floor(s.startupValue*.02));
+    const odds=Math.min(.95,.25+s.productQuality*.06+s.employees*.025);
+    write("A hotel wants 10,000 pairs of AI socks. Fulfilment costs $"+cost+"; your payout $"+Math.floor(cost*6*s.ownership/100)+"; success chance "+Math.round(odds*100)+"%.");
+    if(!await yes(input,"Take the contract?"))return money;if(money<cost){write("Not enough cash.");return money;}money=take(money,cost);
+    if(chance(odds)){s.startupValue=safeAdd(s.startupValue,cost*10);reputation(s,8);write("DELIVERED! The socks provide excellent room service.");return safeAdd(money,Math.floor(cost*6*s.ownership/100));}
+    reputation(s,-8);write("The socks achieved sentience and went on strike.");return money;
+}
+async function staffTraining(money,input,s){
+    const cost=200+s.employees*100;
+    write("Staff training costs $"+cost+". The instructor has finally learned how to unmute.");
+    if(await yes(input,"Train the team for quality +1 and efficiency +0.25?")){if(money<cost){write("Not enough cash.");return money;}s.productQuality++;s.efficiency+=.25;return take(money,cost);}return money;
+}
+async function gooseAudit(money,input,s){
+    write("A goose in a tie audits your wallet. It accepts bread or violence.");
+    const choice=await pick(input,"1 Buy bread ($20) | 2 Negotiate | 3 Run",1,3);
+    if(choice===1)return take(money,20);
+    if(choice===2&&chance(.5)){write("The goose hires you as CFO. Signing bonus: $500.");return safeAdd(money,500);}
+    write("HONK. The goose confiscates 10% of your cash.");return take(money,Math.floor(money*.1));
+}
+async function memeRoyalty(money,input,s){write("Your confused face becomes a reaction meme. A brand pays $2,000 to put it on a mug.");return safeAdd(money,2000);}
+async function cheeseVault(money,input,s){
+    write("A cheese sommelier offers a mystery wheel for $100. Could be vintage. Could be soap.");
+    if(!await yes(input,"Buy it?"))return money;if(money<100){write("Not enough cash.");return money;}
+    if(chance(.3)){write("RARE CHEESE! A collector pays $3,000.");return safeAdd(take(money,100),3000);}
+    write("It was soap. Your kitchen smells expensive.");return take(money,100);
+}
+async function robotAccountant(money,input,s){
+    write("Your robot accountant finds an old refund, then asks for paid vacation.");
+    const refund=Math.max(50,Math.floor(money*.05));write("Refund: $"+refund);return safeAdd(money,refund);
+}
+async function moonBillboard(money,input,s){
+    write("Someone offers to project your face onto the moon for $200. Astronomers are furious.");
+    if(!await yes(input,"Do it?"))return money;if(money<200){write("Not enough cash.");return money;}money=take(money,200);
+    if(chance(.5)){write("You become a celebrity! +$5,000 and reputation +10.");reputation(s,10);return safeAdd(money,5000);}
+    write("It was a flashlight pointed at a tortilla. Reputation -5.");reputation(s,-5);return money;
+}
+const EXTRA_EVENTS = [
+    {fn:buyHouse,eligible:s=>!s.houseValue,weight:3},
+    {fn:sellHouse,eligible:s=>s.houseValue>0,weight:2},
+    {fn:renovateHouse,eligible:s=>s.houseValue>0,weight:2},
+    {fn:leakyPipes,eligible:s=>s.houseValue>0},
+    {fn:homeDisaster,eligible:s=>s.houseValue>0},
+    {fn:homeInsurance,eligible:s=>s.houseValue>0&&!s.houseShield},
+    {fn:neighborhood,eligible:s=>s.houseValue>0},
+    {fn:runForOffice,eligible:s=>!s.campaigning&&!s.office,weight:2},
+    {fn:campaignFundraiser,eligible:s=>s.campaigning,weight:5},
+    {fn:campaignSpending,eligible:s=>s.campaigning,weight:6},
+    {fn:debateNight,eligible:s=>s.campaigning,weight:3},
+    {fn:bribePolitician,eligible:s=>!s.office},
+    {fn:acceptBribe,eligible:s=>s.office>0,weight:3},
+    {fn:passPolicy,eligible:s=>s.office>0,weight:3},
+    {fn:reinvestCompany,eligible:s=>s.hasStartup,weight:2},
+    {fn:companyContract,eligible:s=>s.hasStartup,weight:2},
+    {fn:staffTraining,eligible:s=>s.hasStartup&&s.employees>0},
+    {fn:gooseAudit,eligible:()=>true},{fn:memeRoyalty,eligible:()=>true},
+    {fn:cheeseVault,eligible:()=>true},{fn:robotAccountant,eligible:()=>true},{fn:moonBillboard,eligible:()=>true}
+];
+async function victoryDecision(money,input,s) {
+    s.peakCash=Math.max(s.peakCash,money);
+    if(s.won||money<999999999)return false;
+    s.won=true;write("YOU BEAT THE GAME! Cash: $"+money+". Your empire can keep growing.");
+    s.endless=await yes(input,"Keep playing beyond the original target?");
+    return !s.endless;
 }
