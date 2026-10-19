@@ -84,11 +84,13 @@ async function main() {
   updateStats(money, state);
   while (money > 0 && money < 999999999) {
     write("── TURN " + (state.turn + 1) + " ──", "separator");
-    const choice = Math.floor(Math.random() * 39);
-    money = choice < 19 ? await events[choice](money, io) : await play(choice - 19, money, io, state);
+    const choice = chooseEvent(state);
+    money = choice < 19 ? await events[choice](money, io, state) : await play(choice - 19, money, io, state);
     // Avoid Java's signed-int overflow on huge wins (especially Tim's square).
     money = Math.max(0, Math.min(2147483647, Math.trunc(money)));
     money = advanceTurn(money, state);
+    updateStats(money, state);
+    money = await rescueFromBankruptcy(money, io, state);
     printStatus(money, state);
     updateStats(money, state);
     write("You now have " + money + " dollars");

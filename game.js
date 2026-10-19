@@ -12,6 +12,8 @@ function createState() { return {
   pokerSkill: 0,
   stockPrice: 100,
   shares: 0,
+  cars: 0,
+  houseValue: 0, // Set this when a future event awards a house.
   hasStartup: false,
   startupName: "",
   startupValue: 2000,
@@ -166,7 +168,7 @@ function createState() { return {
             return 0;
         }
     }
-    async function richGirl(money, scan){
+    async function richGirl(money, scan, s){
         write("You start dating a girl who is rich AF");
         write("She has helly red flags");
         write("Stay? yes or no");
@@ -179,7 +181,8 @@ function createState() { return {
                 return money +10000;
             } else {
                 write("She likes a loyal dude");
-                write("now you are stuck with a car");
+                s.cars++;
+                write("You keep the car. You can sell it for $10,000 if you run out of cash.");
                 return money;
             }
         } else {
@@ -643,6 +646,7 @@ function createState() { return {
         if (s.hasStartup) write(s.startupName + ": " + s.ownership + "% ownership | value $" + s.startupValue
                 + " | employees " + s.employees + " | quality " + s.productQuality + " | patent " + s.patent);
         else write("Startup: none");
+        write("Cars: " + s.cars + " ($10,000 each) | House value: $" + s.houseValue);
         write("Insurance: " + s.insured + " | Evidence: " + s.evidence + " | Lawsuit risk: " + s.lawsuitRisk);
         write("==================================\n");
     }
@@ -1032,3 +1036,70 @@ function createState() { return {
         reputation(s, -10); s.lawsuitRisk++;
         return take(money, Math.trunc(money / 2));
     }
+
+// Events that need an existing company, using GameEvents.play's event IDs.
+// Interviews and investment-advice sponsorships remain available to everyone.
+const COMPANY_EVENT_IDS = new Set([4, 5, 6, 7, 8, 9, 11, 14, 15]);
+function eventPool(s) {
+    const pool = [];
+    for (let choice = 0; choice < 39; choice++) {
+        const eventId = choice - 19;
+        if (!s.hasStartup && COMPANY_EVENT_IDS.has(eventId)) continue;
+        if (s.hasStartup && eventId === 3) continue;
+        // Four tickets for founding; one ticket for every other eligible event.
+        const weight = eventId === 3 ? 4 : 1;
+        for (let ticket = 0; ticket < weight; ticket++) pool.push(choice);
+    }
+    return pool;
+}
+function chooseEvent(s) {
+    const pool = eventPool(s);
+    return pool[Math.floor(Math.random() * pool.length)];
+}
+function sellableAssets(s) {
+    const assets = [];
+    if (s.shares > 0 && s.stockPrice > 0) assets.push({kind: "stock", label: "FART shares (" + s.shares + " at $" + s.stockPrice + " each)"});
+    if (s.angelStakes > 0 && s.angelPrice > 0) assets.push({kind: "angel", label: "Angel shares (" + s.angelStakes + " at $" + s.angelPrice + " each)"});
+    if (s.cars > 0) assets.push({kind: "car", label: "One car ($10,000; you own " + s.cars + ")"});
+    if (s.houseValue > 0) assets.push({kind: "house", label: "House ($" + s.houseValue + ")"});
+    return assets;
+}
+async function rescueFromBankruptcy(money, input, s) {
+    if (money > 0) return money;
+    money = 0;
+    while (money === 0) {
+        const assets = sellableAssets(s);
+        if (!assets.length) {
+            write("You're out of cash and have no stocks, cars, or house to sell.");
+            return 0;
+        }
+        write("OUT OF CASH — you can sell an asset to stay in the game!");
+        assets.forEach((asset, i) => write((i + 1) + " - Sell " + asset.label));
+        write("0 - Give up");
+        const choice = await pick(input, "Choose an asset to sell", 0, assets.length);
+        if (choice === 0) {
+            if (await yes(input, "Give up and end this game?")) return 0;
+            continue;
+        }
+        const asset = assets[choice - 1];
+        if (asset.kind === "stock" || asset.kind === "angel") {
+            const holdings = asset.kind === "stock" ? "shares" : "angelStakes";
+            const price = asset.kind === "stock" ? s.stockPrice : s.angelPrice;
+            const qty = await pick(input, "How many shares? (0 to choose another asset)", 0, s[holdings]);
+            if (qty === 0) continue;
+            s[holdings] -= qty;
+            money = safeAdd(money, qty * price);
+            write("Sold " + qty + " shares for $" + money + ".");
+        } else if (asset.kind === "car") {
+            s.cars--;
+            money = safeAdd(money, 10000);
+            write("Sold one car for $10,000.");
+        } else if (asset.kind === "house") {
+            money = safeAdd(money, s.houseValue);
+            s.houseValue = 0;
+            write("Sold your house for $" + money + ".");
+        }
+        write("You have cash again — you're still in the game!");
+    }
+    return money;
+}
