@@ -1362,3 +1362,779 @@ async function victoryDecision(money,input,s) {
     s.endless=await yes(input,"Keep playing beyond the original target?");
     return !s.endless;
 }
+// ===== BALANCE UPDATE =====
+// Keep this block after all the existing game.js code.
+(() => {
+  const originalCreateState = createState;
+  const originalClearHouse = clearHouse;
+  const originalExtendedStatus = extendedStatus;
+
+  createState = function () {
+    return {
+      ...originalCreateState(),
+      girlfriends: 0,
+      dead: false,
+      deathReason: "",
+      salaryClock: 0,
+      renting: false,
+      rentClock: 0,
+      quizDeck: [],
+      lastQuiz: -1
+    };
+  };
+
+  clearHouse = function (s) {
+    originalClearHouse(s);
+    s.renting = false;
+    s.rentClock = 0;
+  };
+
+  // Keep existing event eligibility and weights, but give Tim
+  // one-tenth of the weight he previously had.
+  chooseEvent = function (s) {
+    const pool = eventPool(s);
+    const total = pool.reduce(
+      (sum, id) => sum + (id === 1 ? 0.1 : 1),
+      0
+    );
+    let roll = Math.random() * total;
+
+    for (const id of pool) {
+      roll -= id === 1 ? 0.1 : 1;
+      if (roll < 0) return id;
+    }
+    return pool[pool.length - 1];
+  };
+
+  // Read errors should propagate rather than being swallowed
+  // by the integer-validation loop.
+  pick = async function (input, prompt, low, high) {
+    while (true) {
+      write(`${prompt} [${low}-${high}]: `);
+      const raw = (await input.read()).trim();
+      let value;
+      try {
+        value = parseInteger(raw);
+      } catch {
+        write("Please enter a whole number in range.");
+        continue;
+      }
+      if (value >= low && value <= high) return value;
+      write("Please enter a whole number in range.");
+    }
+  };
+
+  // Bankruptcy is distinct from death.
+  // Bankruptcy liquidates ALL public shares, angel shares and cars.
+  // A house is sold only if those assets cannot raise any cash.
+  rescueFromBankruptcy = async function (money, input, s) {
+    if (s.dead) return 0;
+    if (money > 0) return money;
+
+    money = 0;
+    write("BANKRUPTCY! Your stocks and cars must be liquidated.");
+
+    if (s.shares > 0) {
+      const count = s.shares;
+      const proceeds = cashLimit(count * s.stockPrice);
+      s.shares = 0;
+      money = safeAdd(money, proceeds);
+      write(`Sold ALL ${count} FART shares for $${proceeds}.`);
+    }
+
+    if (s.angelStakes > 0) {
+      const count = s.angelStakes;
+      const proceeds = cashLimit(count * s.angelPrice);
+      s.angelStakes = 0;
+      money = safeAdd(money, proceeds);
+      write(`Sold ALL ${count} angel shares for $${proceeds}.`);
+    }
+
+    if (s.cars > 0) {
+      const count = s.cars;
+      const proceeds = cashLimit(count * 10000);
+      s.cars = 0;
+      money = safeAdd(money, proceeds);
+      write(`Sold ALL ${count} cars for $${proceeds}.`);
+    }
+
+    if (money > 0) {
+      write(`You survive with $${money}, but those holdings are gone.`);
+      return money;
+    }
+
+    if (s.houseValue > 0) {
+      const proceeds = s.houseValue;
+      if (await yes(
+        input,
+        `Your house is your last sellable asset. Sell it for $${proceeds}?`
+      )) {
+        clearHouse(s);
+        write("House sold. You are still in the game.");
+        return proceeds;
+      }
+    }
+
+    write("You cannot raise any cash. Your run is over.");
+    return 0;
+  };
+
+  // Every accepted relationship remains active until a breakup
+  // or discovery, whether its gift car is sold or retained.
+  richGirl = async function (money, input, s) {
+    write("You meet another wealthy girl.");
+    write(`Current girlfriends: ${s.girlfriends}.`);
+
+    if (s.girlfriends > 0) {
+      write("Another relationship increases the chance they discover each other.");
+    }
+
+    if (!await yes(input, "Start dating her?")) {
+      write("You politely decline. Your calendar breathes a sigh of relief.");
+      return money;
+    }
+
+    s.girlfriends++;
+    write("She gives you a car!");
+
+    if (await yes(input, "Sell the car for $10,000?")) {
+      money = safeAdd(money, 10000);
+      write("Car sold. The relationship is still active.");
+    } else {
+      s.cars++;
+      write("You keep the car.");
+    }
+
+    write(`You now have ${s.girlfriends} active relationship(s).`);
+    return money;
+  };
+
+  function relationshipFallout(money, s) {
+    if (s.girlfriends < 2) return money;
+
+    const risk = Math.min(
+      0.8,
+      0.06 * s.girlfriends * (s.girlfriends - 1)
+    );
+
+    if (!chance(risk)) return money;
+
+    const fraction = 0.5 + Math.random() * 0.3;
+    const loss = Math.floor(money * fraction);
+
+    write("YOUR GIRLFRIENDS FOUND THE GROUP CHAT.");
+    write(`The fallout costs you $${loss} in settlements and expenses.`);
+
+    if (s.cars > 0) {
+      write("They also reclaim all your gift cars.");
+      s.cars = 0;
+    }
+
+    reputation(s, -25);
+    s.girlfriends = 0;
+    write("All the relationships end. Reputation -25.");
+    return take(money, loss);
+  }
+
+  async function relationshipDecision(money, input, s) {
+    write(`You are juggling ${s.girlfriends} relationships.`);
+    const choice = await pick(
+      input,
+      "1 Break up with one | 2 End all relationships | 3 Keep dating",
+      1,
+      3
+    );
+
+    if (choice === 3) return money;
+
+    const ending = choice === 1 ? 1 : s.girlfriends;
+    const cost = Math.min(money, ending * 250);
+    s.girlfriends -= ending;
+
+    write(`You end ${ending} relationship(s). Breakup expenses: $${cost}.`);
+    return take(money, cost);
+  }
+
+  // Housing: offers range from 65% to 135% of current value.
+  // A buyer's hidden maximum limits successful counteroffers.
+  sellHouse = async function (money, input, s) {
+    const value = s.houseValue;
+    const offer = Math.max(
+      1,
+      cashLimit(value * (0.65 + Math.random() * 0.7))
+    );
+    const ceiling = cashLimit(offer * (1 + Math.random() * 0.2));
+
+    write(`Your home's current market value is $${value}.`);
+    write(`A buyer offers $${offer}.`);
+    if (s.renting) write("A sale will also end your rental income.");
+
+    const choice = await pick(
+      input,
+      "1 Accept | 2 Counteroffer | 3 Reject | 4 Rental management",
+      1,
+      4
+    );
+
+    if (choice === 4) return manageRental(money, input, s);
+    if (choice === 3) {
+      write("You reject the offer and keep your house.");
+      return money;
+    }
+
+    let salePrice = offer;
+
+    if (choice === 2) {
+      const ask = await pick(
+        input,
+        "Your asking price; 0 to cancel",
+        0,
+        Number.MAX_SAFE_INTEGER
+      );
+
+      if (ask === 0) return money;
+
+      if (ask > ceiling || !chance(0.85)) {
+        write("The buyer walks away. You keep the house.");
+        return money;
+      }
+
+      salePrice = ask;
+      write(`The buyer accepts your counteroffer of $${salePrice}!`);
+    }
+
+    money = safeAdd(money, salePrice);
+    clearHouse(s);
+    write(`House sold for $${salePrice}.`);
+    return money;
+  };
+
+  async function manageRental(money, input, s) {
+    if (s.renting) {
+      write("Your home is currently rented out.");
+      if (await yes(input, "End the rental arrangement?")) {
+        s.renting = false;
+        s.rentClock = 0;
+        write("Rental ended. The home remains yours.");
+      }
+      return money;
+    }
+
+    const fee = Math.max(50, Math.floor(s.houseValue * 0.005));
+    const estimate = Math.max(25, Math.floor(s.houseValue * 0.025));
+
+    write(`Listing and screening cost $${fee}.`);
+    write(`Rent is 2.5% of current home value every five turns—about $${estimate} now.`);
+    write("Upkeep continues. Tenants can miss payments or damage the property.");
+
+    if (!await yes(input, "Put your house out for rent?")) return money;
+
+    if (money < fee) {
+      write("You cannot afford the listing fee.");
+      return money;
+    }
+
+    s.renting = true;
+    s.rentClock = 0;
+    write("A tenant signs the lease.");
+    return take(money, fee);
+  }
+
+  async function tenantTrouble(money, input, s) {
+    write("Your tenant has converted the living room into a trampoline park.");
+    const repair = Math.max(100, Math.floor(s.houseValue * 0.04));
+
+    if (await yes(input, `Pay $${repair} for repairs?`)) {
+      if (money >= repair) {
+        write("Damage repaired. The tenant keeps renting.");
+        return take(money, repair);
+      }
+      write("You cannot afford the repairs.");
+    }
+
+    s.houseValue = Math.max(100, Math.floor(s.houseValue * 0.9));
+    s.renting = false;
+    s.rentClock = 0;
+    write("The tenant leaves. Property value falls 10% and rental income stops.");
+    return money;
+  }
+
+  function endPoliticalCareer(s) {
+    s.office = 0;
+    s.officeTurns = 0;
+    s.salaryClock = 0;
+    s.campaigning = false;
+    s.targetOffice = 0;
+    s.campaignTurns = 0;
+    s.campaignFunds = 0;
+    s.campaignSpend = 0;
+    s.support = 0;
+  }
+
+  function die(s, reason) {
+    s.dead = true;
+    s.deathReason = reason;
+    write(reason);
+    write("Your run ends. Income and asset sales cannot reverse a fatal event.");
+    return 0;
+  }
+
+  runForOffice = async function (money, input, s) {
+    write("The ballot is open.");
+
+    OFFICES.slice(1).forEach((office, index) => {
+      write(
+        `${index + 1} - ${office.name}: filing $${office.fee}; ` +
+        `salary $${office.salary} every SEVEN turns in office`
+      );
+    });
+
+    write("Office lasts 12 turns. Unpaid partial salary periods are forfeited.");
+    write("Public office also exposes you to threats, scandals and financial losses.");
+
+    const choice = await pick(input, "Choose office; 0 to pass", 0, 3);
+    if (!choice) return money;
+
+    if (money < OFFICES[choice].fee) {
+      write("You cannot afford the filing fee.");
+      return money;
+    }
+
+    s.targetOffice = choice;
+    s.campaigning = true;
+    s.campaignTurns = 7;
+    s.support = 0;
+    s.campaignFunds = 0;
+    s.campaignSpend = 0;
+
+    write("You filed! Six further event turns until election night.");
+    return take(money, OFFICES[choice].fee);
+  };
+
+  async function officeScandal(money, input, s) {
+    write("Your office accidentally publishes its private group chat.");
+    const cost = Math.max(250, Math.floor(money * 0.12));
+
+    const choice = await pick(
+      input,
+      `1 Apologize | 2 Hire crisis PR ($${cost}) | 3 Blame the intern`,
+      1,
+      3
+    );
+
+    if (choice === 1) {
+      reputation(s, -12);
+      write("The apology helps, but voters are still angry. Reputation -12.");
+    } else if (choice === 2 && money >= cost) {
+      money = take(money, cost);
+      const damage = chance(0.6) ? 4 : 18;
+      reputation(s, -damage);
+      write(`The campaign costs $${cost}. Reputation -${damage}.`);
+    } else {
+      reputation(s, -25);
+      write("The response backfires. Reputation -25.");
+    }
+
+    return money;
+  }
+
+  async function officeKidnapping(money, input, s) {
+    write("Your child has been kidnapped. The police are coordinating a rescue.");
+    const ransom = Math.max(1000, Math.floor(money * 0.4));
+
+    const choice = await pick(
+      input,
+      `1 Pay ransom ($${ransom}) | 2 Trust police rescue`,
+      1,
+      2
+    );
+
+    if (choice === 1 && money >= ransom) {
+      write("Your child returns safely, but the ransom is gone.");
+      return take(money, ransom);
+    }
+
+    if (choice === 1) write("You cannot afford the ransom.");
+
+    if (chance(0.65)) {
+      write("The police rescue your child safely.");
+      return money;
+    }
+
+    const emergencyCost = Math.max(500, Math.floor(money * 0.6));
+    write("The rescue succeeds after a prolonged emergency.");
+    write(`Security, relocation and recovery expenses cost $${emergencyCost}.`);
+    reputation(s, -8);
+    return take(money, emergencyCost);
+  }
+
+  async function officeThreat(money, input, s) {
+    write("Security reports a credible threat against you.");
+    const cost = Math.max(500, Math.floor(money * 0.08));
+
+    const choice = await pick(
+      input,
+      `1 Extra protection ($${cost}) | 2 Resign and relocate | 3 Ignore`,
+      1,
+      3
+    );
+
+    if (choice === 2) {
+      endPoliticalCareer(s);
+      const relocation = Math.max(250, Math.floor(money * 0.15));
+      write(`You leave office and relocate. Cost: $${relocation}.`);
+      return take(money, relocation);
+    }
+
+    let risk = s.reputation < 25 ? 0.4 : 0.12;
+
+    if (choice === 1 && money >= cost) {
+      money = take(money, cost);
+      risk *= 0.2;
+      write("Extra protection reduces the danger, but cannot eliminate it.");
+    } else if (choice === 1) {
+      write("You cannot afford extra protection.");
+    }
+
+    if (chance(risk)) {
+      return die(s, "You are assassinated while holding office.");
+    }
+
+    write("You survive the threat.");
+    return money;
+  }
+
+  async function officeRecall(money, input, s) {
+    write("A recall petition is circulating. Even your campaign mascot signed it.");
+    const cost = Math.max(500, Math.floor(money * 0.1));
+
+    let chanceOfRemoval = Math.max(0.15, (100 - s.reputation) / 110);
+
+    if (await yes(input, `Spend $${cost} responding to voters?`)) {
+      if (money >= cost) {
+        money = take(money, cost);
+        chanceOfRemoval *= 0.6;
+      } else {
+        write("You cannot afford the response.");
+      }
+    }
+
+    if (chance(chanceOfRemoval)) {
+      endPoliticalCareer(s);
+      reputation(s, -10);
+      write("You are removed from office. Future salary is cancelled.");
+    } else {
+      reputation(s, -5);
+      write("You survive the recall, but it damages your reputation.");
+    }
+
+    return money;
+  }
+
+  // Revised turn order:
+  // 1. Market changes and costs/risks.
+  // 2. Stop if cash is zero or the player dies.
+  // 3. Pay eligible income only to a solvent, living player.
+  // The UI also handles bankruptcy immediately after each event.
+  advanceTurn = function (money, s) {
+    if (s.dead) return 0;
+
+    s.turn++;
+
+    s.stockPrice = Math.max(
+      5,
+      Math.min(5000, s.stockPrice + Math.floor(Math.random() * 41) - 20)
+    );
+    s.angelPrice = Math.max(
+      5,
+      Math.min(5000, s.angelPrice + Math.floor(Math.random() * 41) - 20)
+    );
+
+    if (s.debt > 0 && s.turn % 3 === 0) {
+      const interest = Math.max(1, Math.floor(s.debt / 20));
+      s.debt = safeAdd(s.debt, interest);
+      write(`Bank interest: +$${interest} debt.`);
+    }
+
+    money = extendedTurn(money, s);
+
+    if (s.dead || money <= 0) return 0;
+
+    if (s.hasStartup) money = companyIncome(money, s);
+    return cashLimit(money);
+  };
+
+  extendedTurn = function (money, s) {
+    if (s.dead) return 0;
+
+    if (s.houseValue > 0) {
+      s.houseValue = Math.max(
+        100,
+        cashLimit(s.houseValue * (0.95 + Math.random() * 0.1))
+      );
+      const upkeep = Math.max(1, Math.floor(s.houseCost * 0.001));
+      money = take(money, upkeep);
+      write(`Home value: $${s.houseValue}. Upkeep: $${upkeep}.`);
+    }
+
+    money = relationshipFallout(money, s);
+
+    // Low reputation creates an additional danger even when
+    // an office-specific event was not selected this turn.
+    if (s.office && s.reputation < 25) {
+      const risk = (25 - s.reputation) / 500;
+      if (chance(risk)) {
+        return die(s, "An attack ends your political career—and your run.");
+      }
+    }
+
+    if (s.heat > 0 && chance(s.heat / 250)) {
+      const fine = Math.max(500, Math.floor(money * 0.35));
+      money = take(money, fine);
+      reputation(s, -25);
+      endPoliticalCareer(s);
+      s.heat = Math.max(0, s.heat - 50);
+      write(`CORRUPTION INVESTIGATION! Fine: $${fine}. You lose any office or candidacy.`);
+    } else {
+      s.heat = Math.max(0, s.heat - 1);
+    }
+
+    if (s.office) {
+      s.salaryClock++;
+      const payday = s.salaryClock >= 7;
+
+      if (payday) {
+        s.salaryClock = 0;
+
+        if (money > 0) {
+          const salary = OFFICES[s.office].salary;
+          money = safeAdd(money, salary);
+          write(`Seven-turn office payday: +$${salary}.`);
+        } else {
+          write("Your salary cannot rescue you from bankruptcy. This payday is forfeited.");
+        }
+      }
+
+      s.officeTurns--;
+      if (s.officeTurns <= 0) {
+        s.office = 0;
+        s.salaryClock = 0;
+        write("Your term ends. Unpaid partial salary is forfeited.");
+      }
+    }
+
+    if (s.campaigning && --s.campaignTurns <= 0) {
+      const odds = electionOdds(s);
+      write(`ELECTION NIGHT! Win chance: ${Math.round(odds * 100)}%.`);
+
+      if (chance(odds)) {
+        s.office = s.targetOffice;
+        s.officeTurns = 12;
+        s.salaryClock = 0;
+        reputation(s, 10);
+        write(`YOU WIN! You hold ${OFFICES[s.office].name} for 12 turns.`);
+        write("Your first salary arrives after seven turns in office.");
+      } else {
+        reputation(s, -5);
+        write("You lose the election.");
+      }
+
+      s.campaigning = false;
+      s.campaignFunds = 0;
+      s.campaignSpend = 0;
+      s.support = 0;
+      s.targetOffice = 0;
+      s.campaignTurns = 0;
+      write("Campaign accounts close. Unspent donations do not become personal cash.");
+    }
+
+    if (s.renting && s.houseValue > 0) {
+      s.rentClock++;
+
+      if (s.rentClock >= 5) {
+        s.rentClock = 0;
+
+        if (money <= 0) {
+          write("Bankruptcy interrupts rent collection this turn.");
+        } else if (chance(0.18)) {
+          write("Your tenant misses this rent payment.");
+        } else {
+          const rent = Math.max(25, Math.floor(s.houseValue * 0.025));
+          money = safeAdd(money, rent);
+          write(`Rental payment received: +$${rent}.`);
+        }
+      }
+    }
+
+    return cashLimit(money);
+  };
+
+  extendedStatus = function (s) {
+    originalExtendedStatus(s);
+
+    write(`Active girlfriends: ${s.girlfriends}.`);
+
+    if (s.girlfriends >= 2) {
+      const risk = Math.min(
+        0.8,
+        0.06 * s.girlfriends * (s.girlfriends - 1)
+      );
+      write(`Relationship discovery chance next turn: ${Math.round(risk * 100)}%.`);
+    }
+
+    if (s.office) {
+      write(`Next office payday in ${7 - s.salaryClock} turn(s).`);
+      if (s.reputation < 25) write("LOW REPUTATION: increased assassination risk.");
+    }
+
+    if (s.renting) {
+      write(`Home rented out. Next rent collection in ${5 - s.rentClock} turn(s).`);
+    }
+  };
+
+  const questions = [
+    ["What is 12 × 13?", ["156"]],
+    ["How many sides does a dodecagon have?", ["12", "twelve"]],
+    ["What is 17 × 6?", ["102"]],
+    ["What is the square root of 144?", ["12", "twelve"]],
+    ["What is 15% of 200?", ["30", "thirty"]],
+    ["What is 2 to the power of 10?", ["1024", "1,024"]],
+    ["What is 7 squared?", ["49"]],
+    ["How many degrees are in a right angle?", ["90"]],
+    ["What is the smallest prime number?", ["2", "two"]],
+    ["How many sides does a hexagon have?", ["6", "six"]],
+    ["What is 81 divided by 9?", ["9", "nine"]],
+    ["How many minutes are in three hours?", ["180"]],
+    ["What is the chemical symbol for gold?", ["au"]],
+    ["What is the chemical symbol for oxygen?", ["o"]],
+    ["What is H2O commonly called?", ["water"]],
+    ["Which planet is called the Red Planet?", ["mars"]],
+    ["Which planet is closest to the Sun?", ["mercury"]],
+    ["Which planet is the largest in our solar system?", ["jupiter"]],
+    ["What force keeps planets in orbit around the Sun?", ["gravity", "gravitation"]],
+    ["What gas do plants absorb during photosynthesis?", ["carbon dioxide", "co2"]],
+    ["Which organ pumps blood through the human body?", ["heart", "the heart"]],
+    ["How many legs does an adult insect have?", ["6", "six"]],
+    ["What is the capital of France?", ["paris"]],
+    ["What is the capital of Japan?", ["tokyo"]],
+    ["What is the capital of Italy?", ["rome"]],
+    ["Which ocean is the largest?", ["pacific", "pacific ocean", "the pacific ocean"]],
+    ["On which continent is Egypt?", ["africa"]],
+    ["Which country contains the city of Barcelona?", ["spain"]],
+    ["Who wrote Romeo and Juliet?", ["shakespeare", "william shakespeare"]],
+    ["Who painted the Mona Lisa?", ["leonardo da vinci", "da vinci"]],
+    ["How many strings does a standard violin have?", ["4", "four"]],
+    ["How many keys does a standard full-size piano have?", ["88"]],
+    ["In chess, which piece moves in an L shape?", ["knight", "the knight"]],
+    ["How many bits are in a byte?", ["8", "eight"]],
+    ["What does HTML stand for?", ["hypertext markup language", "hyper text markup language"]],
+    ["What number is written as 1010 in binary?", ["10", "ten"]]
+  ];
+
+  function nextQuestion(s) {
+    if (!s.quizDeck.length) {
+      s.quizDeck = questions.map((_, index) => index);
+
+      for (let i = s.quizDeck.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [s.quizDeck[i], s.quizDeck[j]] =
+          [s.quizDeck[j], s.quizDeck[i]];
+      }
+
+      // Avoid repeating the final question of the previous deck
+      // as the first question of the next deck.
+      const last = s.quizDeck.length - 1;
+      if (s.quizDeck[last] === s.lastQuiz) {
+        [s.quizDeck[0], s.quizDeck[last]] =
+          [s.quizDeck[last], s.quizDeck[0]];
+      }
+    }
+
+    s.lastQuiz = s.quizDeck.pop();
+    return questions[s.lastQuiz];
+  }
+
+  async function askTrivia(input, s) {
+    const [question, accepted] = nextQuestion(s);
+    write(question);
+    const answer = (await input.read())
+      .trim()
+      .toLowerCase()
+      .replace(/\s+/g, " ")
+      .replace(/[.!?]+$/, "");
+
+    if (accepted.includes(answer)) return true;
+
+    write(`Correct answer: ${accepted[0]}.`);
+    return false;
+  }
+
+  gameShow = async function (money, input, s) {
+    write("WELCOME TO WHO WANTS TO BE A MILLIONAIRE!");
+    write("Answer correctly for $10,000.");
+
+    if (!await askTrivia(input, s)) {
+      write("Wrong! You lose $100 for embarrassing yourself.");
+      return take(money, 100);
+    }
+
+    write("Correct! You have won $10,000.");
+
+    if (!await yes(input, "Risk those winnings for $100,000?")) {
+      return safeAdd(money, 10000);
+    }
+
+    write("FINAL QUESTION:");
+
+    if (await askTrivia(input, s)) {
+      write("YOU WIN $100,000!");
+      return safeAdd(money, 100000);
+    }
+
+    write("You lose the game-show winnings.");
+    return money;
+  };
+
+  // Existing registry entries captured their old function references.
+  // Update those references to the replacements above.
+  for (const event of EXTRA_EVENTS) {
+    if (event.fn.name === "sellHouse") event.fn = sellHouse;
+    if (event.fn.name === "runForOffice") event.fn = runForOffice;
+  }
+
+  EXTRA_EVENTS.push(
+    {
+      fn: relationshipDecision,
+      eligible: s => s.girlfriends > 0,
+      weight: 2
+    },
+    {
+      fn: manageRental,
+      eligible: s => s.houseValue > 0,
+      weight: 2
+    },
+    {
+      fn: tenantTrouble,
+      eligible: s => s.houseValue > 0 && s.renting
+    },
+    {
+      fn: officeScandal,
+      eligible: s => s.office > 0,
+      weight: 3
+    },
+    {
+      fn: officeKidnapping,
+      eligible: s => s.office > 0
+    },
+    {
+      fn: officeThreat,
+      eligible: s => s.office > 0,
+      weight: 2
+    },
+    {
+      fn: officeRecall,
+      eligible: s => s.office > 0,
+      weight: 2
+    }
+  );
+})();
