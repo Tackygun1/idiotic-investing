@@ -69,3 +69,74 @@ ownership payouts, numeric input validation, and maximum cash handling.
 
 A simulated DOM integration check covered startup, 24 turns, victory, and input
 shutdown. A real-browser visual check was unavailable in the build environment.
+
+## Medieval time-travel expansion
+
+Upload **index.html, game.js, medieval.js, and ui.js together**. The new
+medieval.js script must load after game.js and before ui.js, as it does in the
+included index.html. Open index.html locally to play without a server.
+
+If the time machine malfunctions and you decline its emergency repair, or that
+repair fails, you arrive in a fictional medieval village in 1347. The dialogue
+uses readable archaic English for the game's comic medieval setting.
+
+Your remaining modern cash (half the pre-trip balance) is stored separately.
+You start with 100 silver coins from selling your phone. All modern holdings,
+prices, income, expenses, office/campaign timers, relationships and reputation
+pause during the medieval visit. Medieval money does not trigger the modern
+victory target. Returning resumes those systems and restores the stored cash,
+plus leftover coins after repair costs and medieval debt.
+
+### Twenty medieval events
+
+1. Accused of witchcraft
+2. The blacksmith's bargain
+3. The alchemist's coil
+4. Crystal in the quarry
+5. The lord's tithe
+6. The harvest
+7. The highwaymen
+8. A knight's wager
+9. The tavern dice
+10. The monastery scribe
+11. The wandering peddler
+12. The village healer
+13. The royal goose
+14. The bridge keeper
+15. The castle kitchen
+16. The ruined watchtower
+17. The counterfeit relic
+18. The wool fair
+19. The town crier
+20. The clockmaker's workshop
+
+Events are shuffled without repetition until all 20 have appeared. Several
+provide work, trade or part-finding choices, so there are multiple routes home.
+
+### Escape
+
+Collect a brass gear, copper coil and quartz crystal; complete at least five
+medieval turns; and have 75 coins available. Click/type **repair** at a turn's
+end to visit the machine instead of exploring on the next turn. Visiting the
+machine uses a turn even if you are not ready or decline the attempt.
+
+A repair has a 70% success chance, or 90% after studying a monk's or clockmaker's
+plans. Failure costs 25 coins, preserves all parts, and allows another attempt.
+The third actual attempt succeeds automatically. Success costs 75 coins.
+Modern events resume on the following turn; entering/exiting does not also
+advance modern income or timers.
+
+If you run out of medieval coins, modern stocks, cars and houses cannot be sold.
+The abbey offers a 40-coin work advance with a 50-coin debt. Repayments take up
+to 10 coins each later medieval turn, never reducing the purse below one coin.
+You can decline the advance and end the run. Unpaid medieval debt is deducted
+from leftover coins upon returning, not from the stored modern cash.
+
+### Validation of this expansion
+
+Syntax checks passed for all JavaScript files. Focused checks cover entry,
+emergency repair, frozen modern state, unique parts, repair requirements,
+failed attempts, guaranteed escape, medieval bankruptcy and event cycling.
+All 20 medieval events passed 600 seeded event simulations. A simulated DOM
+integration check covered entry, five medieval turns, manual repair, restored
+cash and resumed modern event dispatch. No real-browser visual test was run.

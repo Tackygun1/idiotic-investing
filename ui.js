@@ -47,7 +47,7 @@ function suggest() {
   if (/ready to begin/i.test(last)) {
     options = ["Ready"];
   } else if (/type next/i.test(last)) {
-    options = ["next"];
+    options = /or repair/i.test(last) ? ["next", "repair"] : ["next"];
   } else if (/heads or tails/i.test(last)) {
     options = ["heads", "tails"];
   } else if (/rock, paper, or scissors/i.test(last)) {
@@ -115,6 +115,17 @@ function dollars(value) {
 }
 
 function updateStats(money, state) {
+  setText("era", state.era === "medieval" ? "1347 — Medieval" : "Present day");
+  setText("machine", state.era === "medieval" ? state.machineParts.length + "/3 parts · " + state.medievalTurns + "/5 days" : "—");
+  if (state.era === "medieval") {
+    setText("cash", money.toLocaleString("en-US") + " coins");
+    setText("turn", state.turn);
+    setText("rep", state.reputation + " / 100 (paused)");
+    setText("home", state.houseValue ? "Paused" : "None");
+    setText("business", state.hasStartup ? "Paused" : "None");
+    setText("peak", dollars(state.peakCash));
+    return;
+  }
   setText("cash", dollars(money));
   setText("turn", state.turn);
   setText("rep", state.reputation + " / 100");
@@ -146,6 +157,7 @@ async function main() {
   write("Your friend gives you $100.");
 
   let money = 100;
+  let repairRequested = false;
   let finishedAsWinner = false;
 
   setText("result", "game in progress");
@@ -177,8 +189,17 @@ async function main() {
   while (money > 0 && !state.dead) {
     write(`── TURN ${state.turn + 1} ──`, "separator");
 
+    if (state.era === "medieval") {
+      if (repairRequested) {
+        money = await repairTimeMachine(money, io, state);
+      } else {
+        const event = chooseMedievalEvent(state);
+        write(event.name.toUpperCase(), "separator");
+        money = await event.fn(money, io, state);
+      }
+      repairRequested = false;
+    } else {
     const choice = chooseEvent(state);
-
     if (choice < 19) {
       money = await events[choice](money, io, state);
     } else if (choice < 39) {
@@ -187,6 +208,7 @@ async function main() {
       money = await EXTRA_EVENTS[choice - 39].fn(money, io, state);
     }
 
+    }
     money = cashLimit(money);
 
     // Death is permanent: no salary, dividends or asset rescue.
@@ -196,7 +218,7 @@ async function main() {
       break;
     }
 
-    state.peakCash = Math.max(state.peakCash, money);
+    if (state.era === "modern") state.peakCash = Math.max(state.peakCash, money);
     updateStats(money, state);
 
     // Resolve zero cash BEFORE any turn income.
@@ -216,33 +238,40 @@ async function main() {
     // Turn costs and relationship fallout can also cause bankruptcy.
     money = await rescueFromBankruptcy(money, io, state);
 
-    state.peakCash = Math.max(state.peakCash, money);
+    if (state.era === "modern") state.peakCash = Math.max(state.peakCash, money);
     printStatus(money, state);
     updateStats(money, state);
 
-    write(`You now have ${dollars(money)}.`);
+    write(state.era === "medieval" ? `Thou hast ${money} silver coins.` : `You now have ${dollars(money)}.`);
 
     if (money <= 0) break;
 
-    if (await victoryDecision(money, io, state)) {
+    if (state.era === "modern" && await victoryDecision(money, io, state)) {
       finishedAsWinner = true;
       break;
     }
 
-    if (state.endless) {
+    if (state.era === "medieval") setText("result", "stranded in 1347 — seek the machine parts");
+    else if (!state.endless) setText("result", "game in progress");
+    if (state.endless && state.era === "modern") {
       setText("result", "beyond the billion — keep going");
     }
 
-    if (money === Number.MAX_SAFE_INTEGER) {
+    if (state.era === "modern" && money === Number.MAX_SAFE_INTEGER) {
       write("You reached the exact-number limit: $9,007,199,254,740,991.");
       finishedAsWinner = true;
       break;
     }
 
-    write("type next to move on!");
-
-    while ((await io.read()).trim().toLowerCase() !== "next") {
-      write("type next to move on!");
+    const prompt = state.era === "medieval"
+      ? "Type next to journey onward, or repair to visit thy machine."
+      : "type next to move on!";
+    write(prompt);
+    while (true) {
+      const command = (await io.read()).trim().toLowerCase();
+      if (command === "next") break;
+      if (command === "repair" && state.era === "medieval") { repairRequested = true; break; }
+      write(prompt);
     }
   }
 
@@ -252,7 +281,7 @@ async function main() {
     write(state.deathReason || "Your character died.", "separator");
   } else {
     write(
-      finishedAsWinner ? "Good work! You beat the game." : "You lost bum.",
+      finishedAsWinner ? "Good work! You beat the game." : state.era === "medieval" ? "Thy journey hath ended in the year 1347." : "You lost bum.",
       "separator"
     );
   }
