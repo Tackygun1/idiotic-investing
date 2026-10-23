@@ -904,7 +904,7 @@ function createState() { return {
     
     async function acquisitionOffer(money, input, s) {
         if (!s.hasStartup) { write("\nNobody can acquire a company you haven't founded."); return money; }
-        let offer = Math.max(100, ownershipPayout(s) * (s.reputation >= 70 ? 2 : 1));
+        let offer = Math.max(100, ownershipPayout(s));
         write("\nMegaCorp offers $" + offer + " to buy your entire stake in " + s.startupName + ".");
         if (!(await yes(input, "Accept?"))) { s.investorTrust++; write("You hold out for more."); return money; }
         money = safeAdd(money, offer);
@@ -2137,4 +2137,417 @@ async function victoryDecision(money,input,s) {
       weight: 2
     }
   );
+})();
+// Economy revision: skill-driven company value, scaled costs and royal vault.
+function formatMoney(n) {
+  const sign=n<0?'-':''; n=Math.abs(n);
+  for(const [unit,suffix] of [[1e12,'T'],[1e9,'B'],[1e6,'M'],[1e3,'K']]) {
+    if(n>=unit) {
+      const v=Math.floor(n/unit*100)/100;
+      return sign+'$'+v.toLocaleString('en-US',{maximumFractionDigits:2})+suffix;
+    }
+  }
+  return sign+'$'+Math.floor(n).toLocaleString('en-US');
+}
+function scaledCost(base,rate,minimum=1){return Math.max(minimum,cashLimit(base*rate));}
+function companyChange(s,rate,reason){
+  const before=s.startupValue;
+  s.startupValue=Math.max(100,cashLimit(before*(1+rate)));
+  write(reason+` Company value: $${before} → $${s.startupValue}.`);
+}
+function closeCompany(s){
+  Object.assign(s,{hasStartup:false,startupName:'',startupValue:2000,ownership:100,employees:0,productQuality:0,products:0,efficiency:1,patent:false,insured:false,publicity:0,investorTrust:0,managementScore:0});
+}
+const MANAGEMENT_CASES=[
+ ['Returns climbed after a faulty batch. Demand is strong; customers want replacements.','Recall the faulty batch and fix quality','Buy more ads','Increase production without fixing defects','Quality repairs retain customers; advertising defective goods destroys trust.'],
+ ['Your factory is at 100% capacity with a backlog of paid orders. Defects are low.','Expand capacity to fulfill the backlog','Cut staff to save wages','Spend the budget on a new logo','Capacity is the bottleneck, so expand it.'],
+ ['Sales are flat, warehouses are full and production exceeds orders.','Reduce production and clear inventory','Hire more factory workers','Double production to lower unit costs','Unsold stock ties up cash; more production makes it worse.'],
+ ['One supplier is cheap but repeatedly misses deliveries. A reliable backup costs slightly more.','Split orders with the reliable supplier','Commit every order to the cheap supplier','Promise faster deliveries without changing suppliers','A backup reduces disruption and protects customer orders.'],
+ ['A new market has uncertain demand. You have enough cash for a small trial, but not a full rollout.','Run a small paid pilot before expanding','Launch nationwide immediately','Sign a huge long-term warehouse lease','A pilot tests demand before locking up cash.'],
+ ['Customers buy your product but cancel because setup is confusing. The product itself works.','Improve onboarding and support','Build unrelated features','Raise prices to offset cancellations','Fix the reason customers leave.'],
+ ['An order earns $120 per unit but costs $135 per unit to fulfill.','Renegotiate the price or decline','Accept and make it up on volume','Borrow money to fulfill twice as many units','Each unit loses $15; volume increases the loss.'],
+ ['A security audit finds exposed customer records. No breach has been reported yet.','Restrict access and patch the flaw immediately','Hide the audit and launch new ads','Wait for customers to complain','Fixing the known vulnerability protects trust and avoids a larger loss.'],
+ ['Demand is rising, but customers pay after 90 days and suppliers demand payment now.','Negotiate deposits and supplier payment terms','Offer customers even longer payment terms','Spend working capital on an office fountain','Cash timing matters even when orders are profitable.'],
+ ['A rival cuts prices below your costs. Customers praise your reliability and service.','Compete on reliability and retain profitable customers','Match the loss-making price on every order','Remove support while charging the same premium','Protect your profitable advantage instead of copying a loss-making price.']
+];
+async function companyDecision(m,input,s){
+  if(!s.hasStartup)return m;
+  if(!s.managementDeck?.length){s.managementDeck=MANAGEMENT_CASES.map((_,i)=>i);for(let j=s.managementDeck.length-1;j>0;j--){const k=Math.floor(Math.random()*(j+1));[s.managementDeck[j],s.managementDeck[k]]=[s.managementDeck[k],s.managementDeck[j]];}}
+  const row=MANAGEMENT_CASES[s.managementDeck.pop()];
+  write('MANAGEMENT BRIEF: '+row[0]);
+  const options=[{text:row[1],good:true},{text:row[2]},{text:row[3]}];
+  for(let j=2;j>0;j--){const k=Math.floor(Math.random()*(j+1));[options[j],options[k]]=[options[k],options[j]];}
+  options.forEach((o,i)=>write(`${i+1} - ${o.text}`));
+  const c=await pick(input,'Choose your response',1,3);
+  const good=options[c-1].good;
+  s.managementScore=Math.max(-3,Math.min(3,(s.managementScore||0)+(good?1:-2)));
+  companyChange(s,good?.06:-.22,row[4]);
+  reputation(s,good?2:-4);
+  return m;
+}
+(() => {
+  const oldState=createState;
+  createState=function(){return {...oldState(),managementScore:0,managementDeck:[],kingsFork:false,vaultOpened:false,billionReached:false};};
+  const oldStart=startCompany;
+  startCompany=async function(m,i,s){const had=s.hasStartup;m=await oldStart(m,i,s);if(!had&&s.hasStartup){s.startupValue=1000;s.managementScore=0;s.managementDeck=[];write('Initial company valuation: $1000. Growth requires sound decisions.');}return m;};
+  companyIncome=function(m,s){
+    const value=s.startupValue;
+    const margin=.001+Math.min(3,s.products)*.001+Math.min(5,s.productQuality)*.0003+(s.managementScore||0)*.001;
+    const revenue=cashLimit(value*Math.max(0,margin)*Math.min(1.25,s.efficiency));
+    const costs=scaledCost(value,.001+s.employees*.0005,10);
+    const profit=revenue-costs;
+    const dividend=cashLimit(Math.max(0,profit)*s.ownership/100);
+    if(profit<0){companyChange(s,-.015,'Operating losses erode valuation.');m=take(m,-profit);}else m=safeAdd(m,dividend);
+    write(`Company revenue $${revenue}; operating costs $${costs}; your dividend $${dividend}.`);
+    return m;
+  };
+  launchProduct=async function(m,i,s){
+    if(!s.hasStartup)return m;
+    const ready=s.productQuality>=3&&s.employees>=2;
+    write(`LAUNCH REVIEW: quality ${s.productQuality}/3 required; employees ${s.employees}/2 required. ${ready?'Testing and staffing are ready; customers are waiting.':'Launching now risks defective or unfulfilled orders.'}`);
+    const cost=scaledCost(s.startupValue,.08,100);
+    const c=await pick(i,`1 Launch ($${cost}) | 2 Delay and resolve readiness`,1,2);
+    if(c===2){companyChange(s,ready?-.08:-.02,ready?'You miss a ready market window.':'A careful delay limits the damage. Train or hire before launching.');return m;}
+    if(m<cost){write('Insufficient cash for launch.');return m;}
+    m=take(m,cost);
+    if(!ready){s.lawsuitRisk+=2;companyChange(s,-.30,'The launch fails its readiness requirements.');return m;}
+    s.products=Math.min(10,s.products+1);const payout=cashLimit(s.startupValue*.10*s.ownership/100);
+    companyChange(s,.10,'Prepared launch succeeds.');write(`Launch distribution: $${payout}.`);return safeAdd(m,payout);
+  };
+  hireEmployees=async function(m,i,s){
+    if(!s.hasStartup)return m;
+    const cost=scaledCost(s.startupValue,.04,100);
+    write(`Team: ${s.employees}. Payroll per employee: 0.05% of company value each turn. Two employees satisfy launch staffing.`);
+    const c=await pick(i,`1 Hire two ($${cost}) | 2 Fire one | 3 Keep team`,1,3);
+    if(c===1){if(m<cost){write('Insufficient hiring cash.');return m;}s.employees+=2;return take(m,cost);}
+    if(c===2&&s.employees>0){s.employees--;reputation(s,-3);}return m;
+  };
+  staffTraining=async function(m,i,s){
+    if(!s.hasStartup||!s.employees)return m;
+    const cost=scaledCost(s.startupValue,.03,100);
+    if(!await yes(i,`Train staff for $${cost}? Quality +1 (maximum 5).`))return m;
+    if(m<cost){write('Insufficient training cash.');return m;}
+    s.productQuality=Math.min(5,s.productQuality+1);return take(m,cost);
+  };
+  reinvestCompany=async function(m,i,s){
+    if(!s.hasStartup)return m;
+    const cost=scaledCost(s.startupValue,.05,100);
+    const c=await pick(i,`1 R&D: quality +1, cap 5 ($${cost}) | 2 Automation: efficiency +0.05, cap 1.25 ($${cost}) | 3 Pass`,1,3);
+    if(c===3)return m;if(m<cost){write('Insufficient cash.');return m;}
+    if(c===1)s.productQuality=Math.min(5,s.productQuality+1);else s.efficiency=Math.min(1.25,s.efficiency+.05);
+    return take(m,cost);
+  };
+  companyContract=companyDecision;
+  competitor=companyDecision;
+  ventureCapital=async function(m,i,s){
+    if(!s.hasStartup)return m;
+    const sold=s.ownership*.2, proceeds=cashLimit(s.startupValue*sold/100);
+    if(await yes(i,`Sell 20% of your remaining stake for $${proceeds}? Valuation does not change.`)){s.ownership-=sold;return safeAdd(m,proceeds);}return m;
+  };
+  bankLoan=async function(m,i,s){
+    if(s.reputation<25){write('Loan denied: reputation below 25.');return m;}
+    const small=scaledCost(m,.25,1000),large=scaledCost(m,1,5000);
+    const c=await pick(i,`Borrow: 1 $${small} | 2 $${large} | 3 Cancel. Debt grows 5% every third turn`,1,3);
+    if(c===3)return m;const amount=c===1?small:large;
+    if(s.debt>Number.MAX_SAFE_INTEGER-amount){write('Loan exceeds the debt limit.');return m;}
+    s.debt=safeAdd(s.debt,amount);return safeAdd(m,amount);
+  };
+  lawsuit=async function(m,i,s){
+    const exposure=scaledCost(m,.20+Math.min(10,s.lawsuitRisk)*.03,500);
+    write(`LEGAL PAPERS: damages $${exposure}. Evidence: ${s.evidence}; patent: ${s.patent}.`);
+    const c=await pick(i,'1 Settle for half | 2 Fight | 3 Ignore (double damages)',1,3);
+    s.lawsuitRisk=Math.max(0,s.lawsuitRisk-1);
+    if(c===1)return take(m,Math.floor(exposure/2));
+    if(c===2&&chance(s.evidence?.9:s.patent?.6:.3)){write('You win the case.');return m;}
+    reputation(s,c===3?-20:-10);write('Damages awarded against you.');return take(m,exposure*(c===3?2:1));
+  };
+  insurance=async function(m,i,s){
+    if(!s.hasStartup||s.insured)return m;const cost=scaledCost(m,.04,100);
+    if(!await yes(i,`One-use company disaster coverage costs $${cost} (4% of cash, minimum $100). Buy?`))return m;
+    if(m<cost){write('Not enough cash.');return m;}s.insured=true;return take(m,cost);
+  };
+  homeInsurance=async function(m,i,s){
+    if(!s.houseValue||s.houseShield)return m;const cost=scaledCost(m,.03,100);
+    if(!await yes(i,`One-disaster home coverage costs $${cost} (3% of cash, minimum $100). Buy?`))return m;
+    if(m<cost){write('Not enough cash.');return m;}s.houseShield=true;return take(m,cost);
+  };
+  patentOffice=async function(m,i,s){
+    if(!s.hasStartup||s.patent)return m;const cost=scaledCost(m,.05,100);
+    if(!await yes(i,`File a patent for $${cost} (5% of cash, minimum $100)? Quality 3 required for approval.`))return m;
+    if(m<cost){write('Not enough cash.');return m;}m=take(m,cost);
+    if(s.productQuality>=3){s.patent=true;companyChange(s,.03,'Patent approved.');}else{write('Application rejected: insufficient product quality.');}return m;
+  };
+  // EXTRA_EVENTS stores function references; refresh those captured before overrides.
+  const replacements={reinvestCompany,companyContract,staffTraining,homeInsurance};
+  for(const event of EXTRA_EVENTS)if(replacements[event.fn.name])event.fn=replacements[event.fn.name];
+  EXTRA_EVENTS.push({fn:companyDecision,eligible:s=>s.hasStartup,weight:12});
+  // The medieval rescue wrapper delegates to this modern-only implementation.
+  rescueFromBankruptcy=async function(m,i,s){
+    if(s.dead)return 0;if(m>0)return m;
+    if(typeof flashBankruptcy==='function')flashBankruptcy();
+    write('BANKRUPTCY — FORCED ASSET SALE','bankruptcy-message');m=0;
+    for(const [field,price,label] of [['shares',s.stockPrice,'FART shares'],['angelStakes',s.angelPrice,'angel shares'],['cars',10000,'cars']]){
+      if(s[field]>0){const proceeds=cashLimit(s[field]*price);write(`Sold ALL ${s[field]} ${label} for $${proceeds}.`);s[field]=0;m=safeAdd(m,proceeds);}
+    }
+    if(m===0&&s.houseValue>0){m=cashLimit(s.houseValue);clearHouse(s);write(`House liquidated for $${m}.`);}
+    if(m===0&&s.hasStartup){const proceeds=cashLimit(s.startupValue*(s.ownership/100)*.5);closeCompany(s);m=proceeds;write(`Company stake liquidated at 50% of its value: $${proceeds}.`);}
+    write(m>0?`Liquidation complete. Cash: $${m}. Sold assets are gone.`:'No sellable assets remain. Your run is over.','bankruptcy-message');return m;
+  };
+  const originalVictory=victoryDecision;
+  victoryDecision=async function(m,i,s){if(m>=1e9)s.billionReached=true;return originalVictory(m,i,s);};
+  EXTRA_EVENTS.push({fn:royalVault,eligible:s=>s.era!=='medieval'&&(s.billionReached||s.peakCash>=1e9)&&!s.vaultOpened,weight:1});
+  EXTRA_EVENTS.push({fn:islandInvestment,eligible:s=>s.vaultOpened&&s.era!=='medieval',weight:2});
+})();
+async function royalVault(m,i,s){
+  write('A mysterious vault appears. Its lock reads: BRING THE KING’S FORK.');
+  if(!s.kingsFork){write('You lack the ancient fork. The vault vanishes; it may return.');return m;}
+  if(!await yes(i,'Use your royal fork to open the vault?'))return m;
+  s.vaultOpened=true;
+  write('The fork turns! A ferry carries you to fictional billionaire Baron Slipperton’s island, home of an absurdly profitable baby-oil factory. Island investments are now unlocked.');
+  return islandInvestment(m,i,s);
+}
+async function islandInvestment(m,i,s){
+  if(!s.vaultOpened)return m;
+  write('SLIPPERTON ISLAND: invest in baby oil. 55% chance of 4× your stake returned; otherwise the shipment spills and your stake is lost. Maximum stake: 25% of cash.');
+  const stake=await pick(i,'Investment; 0 to decline',0,Math.floor(m*.25));
+  if(!stake)return m;m=take(m,stake);
+  if(chance(.55)){write('The luxury baby-oil shipment sells out!');return safeAdd(m,cashLimit(stake*4));}
+  write('The dock is slippery, the shipment is gone, and the gulls are moisturized.');return m;
+}
+
+"use strict";
+// Loaded after game.js: a separate, self-contained medieval event pool.
+const MACHINE_PARTS = ["brass gear", "copper coil", "quartz crystal"];
+function medievalChoice(input, text, max) { return pick(input, text, 1, max); }
+function medievalGainPart(s, part) {
+  if (s.machineParts.includes(part)) { write(`Thou already possessest a ${part}. Keep thy spare for another traveller.`); return; }
+  s.machineParts.push(part);
+  write(`FOUND: ${part}! Thy machine hath ${s.machineParts.length}/3 required parts.`);
+}
+function medievalFavour(s, amount) { s.medievalFavour = Math.max(0, Math.min(100, s.medievalFavour + amount)); }
+function enterMedieval(money, s) {
+  s.modernCash = cashLimit(money);
+  s.era = "medieval"; s.eraTransition = true;
+  s.medievalTurns = 0; s.machineParts = []; s.medievalDeck = [];
+  s.medievalFavour = 50; s.repairAttempts = 0; s.repairKnowledge = false;
+  s.medievalDebt = 0;
+  write("YEAR 1347 — THOU ART STRANDED!");
+  write("Thy broken machine spits thee beside a muddy village. A startled merchant trades thy useless phone for 100 silver coins.");
+  write("Thy modern cash and holdings await thy return. No modern income, costs, politics or relationship events pass whilst thou art here.");
+  write("Seek a brass gear, a copper coil and a quartz crystal. Explore for at least five turns, then bring 75 coins to mend the machine.");
+  write("At each turn's end, type repair to visit thy machine, or next to explore.");
+  return 100;
+}
+async function repairTimeMachine(money, input, s) {
+  write("THE BROKEN CHARIOT OF TIME");
+  const missing = MACHINE_PARTS.filter(p => !s.machineParts.includes(p));
+  if (missing.length) { write("Thou still lackest: " + missing.join(", ") + "."); return money; }
+  if (s.medievalTurns < 5) { write("Thy engine must cool. Explore until five medieval turns have passed."); return money; }
+  if (money < 75) { write("Thou needest 75 coins for fuel and tools. Seek honest labour or trade."); return money; }
+  const odds = s.repairAttempts >= 2 ? 1 : s.repairKnowledge ? .9 : .7;
+  write(`Repair success: ${Math.round(odds * 100)}%. Success costs 75 coins; failure costs 25. Thy parts remain safe after failure.`);
+  if (!await yes(input, "Wilt thou attempt the repair?")) return money;
+  s.repairAttempts++;
+  if (!chance(odds)) { write("A spark! A puff! Alas, thy machine remaineth broken. Thou losest 25 coins. Try again when ready."); return take(money, 25); }
+  money = take(money, 75);
+  s.era = "modern"; s.eraTransition = true;
+  const restored = safeAdd(s.modernCash, Math.max(0, money - s.medievalDebt));
+  write("THE PORTAL OPENS! Thou hast escaped the Middle Ages!");
+  if(s.kingsFork)write("The king’s fork survived the journey. Somewhere, a vault awaits it.");
+  write(`Your modern cash is restored. Remaining coins, less medieval debts, add $${Math.max(0, money - s.medievalDebt)}. Your original assets and career resume.`);
+  s.modernCash = 0; s.medievalDebt = 0;
+  return restored;
+}
+const MEDIEVAL_EVENTS = [
+  {name:"Accused of witchcraft", fn:async(m,i,s)=>{
+    write("'A WITCH!' crieth a villager. Thy glowing watch hath caused great alarm.");
+    const c=await medievalChoice(i,"1 Explain thy craft | 2 Offer 30 coins | 3 Flee into the mud",3);
+    if(c===2&&m>=30){write("The reeve accepteth thy 'fine'.");return take(m,30);}
+    if(c===1&&chance(.35+s.medievalFavour/200)){medievalFavour(s,8);write("They deem thee a harmless fool. Thou art free.");return m;}
+    medievalFavour(s,-12);write("Thou escapeth the stocks, but the mob taketh half thy purse.");return Math.floor(m/2);
+  }},
+  {name:"The blacksmith's bargain",fn:async(m,i,s)=>{
+    write("A smith hath fashioned a brass gear of uncommon precision.");
+    const c=await medievalChoice(i,"1 Buy it for 40 coins | 2 Work the bellows | 3 Depart",3);
+    if(c===3)return m;
+    if(c===1){if(m<40){write("Thy purse is too light.");return m;}medievalGainPart(s,"brass gear");return take(m,40);}
+    write("A full day's toil earneth thee the gear and 15 coins.");medievalGainPart(s,"brass gear");return safeAdd(m,15);
+  }},
+  {name:"The alchemist's coil",fn:async(m,i,s)=>{
+    write("An alchemist offereth a copper coil. His last apprentice is now green.");
+    const c=await medievalChoice(i,"1 Pay 45 coins | 2 Help with his experiment | 3 Refuse",3);
+    if(c===3)return m;
+    if(c===1){if(m<45){write("Thou hast insufficient coin.");return m;}medievalGainPart(s,"copper coil");return take(m,45);}
+    if(chance(.65)){write("The potion fizzeth harmlessly. The coil is thine!");medievalGainPart(s,"copper coil");return m;}
+    write("Thy eyebrows vanish. Ointment costeth 15 coins.");return take(m,15);
+  }},
+  {name:"Crystal in the quarry",fn:async(m,i,s)=>{
+    write("A quarryman showeth thee a vein of clear quartz.");
+    const c=await medievalChoice(i,"1 Pay 35 coins for a crystal | 2 Dig carefully | 3 Leave",3);
+    if(c===3)return m;
+    if(c===1){if(m<35){write("Thou canst not afford it.");return m;}medievalGainPart(s,"quartz crystal");return take(m,35);}
+    if(chance(.7)){medievalGainPart(s,"quartz crystal");write("Thou findest a crystal beneath the stone.");return m;}
+    write("Thy shovel breaketh. Repairs cost 10 coins.");return take(m,10);
+  }},
+  {name:"The lord's tithe",fn:async(m,i,s)=>{
+    write("The lord demandeth a tithe, for his third banquet will not pay for itself.");
+    const c=await medievalChoice(i,"1 Pay one fifth | 2 Hide thy purse",2);
+    if(c===2&&chance(.45)){write("The collector overlooketh thee.");return m;}
+    const loss=Math.floor(m*(c===1?.2:.4));write(`The collector taketh ${loss} coins.`);return take(m,loss);
+  }},
+  {name:"The harvest",fn:async(m,i,s)=>{
+    write("The harvest awaiteth, and the village needeth strong hands.");
+    const c=await medievalChoice(i,"1 Labour for 35 coins | 2 Gamble on a share of the crop | 3 Rest",3);
+    if(c===1){medievalFavour(s,5);write("Thy honest work earneth 35 coins.");return safeAdd(m,35);}
+    if(c===2){const pay=chance(.5)?90:5;write(`Thy share bringeth ${pay} coins.`);return safeAdd(m,pay);}return m;
+  }},
+  {name:"The highwaymen",fn:async(m,i,s)=>{
+    write("Three rogues block thy road. One holdeth a turnip as though it were a dagger.");
+    const c=await medievalChoice(i,"1 Surrender 25 coins | 2 Bluff | 3 Run",3);
+    if(c===1)return take(m,25);
+    if(chance(c===2?.45:.6)){write("Thou escapeth with thy purse intact.");return m;}
+    write("The rogues seize half thy silver.");return Math.floor(m/2);
+  }},
+  {name:"A knight's wager",fn:async(m,i,s)=>{
+    write("A knight wagereth 20 coins that thou canst not strike a wooden target.");
+    if(!await yes(i,"Wilt thou wager 20 coins?"))return m;
+    if(m<20){write("Thou lackest the stake.");return m;}
+    if(chance(.5)){write("A fine shot! Thou winnest 60 coins in profit.");return safeAdd(m,60);}
+    write("Thou strikest the herald's lunch instead.");return take(m,20);
+  }},
+  {name:"The tavern dice",fn:async(m,i,s)=>{
+    write("A tavern keeper inviteth thee to dice. His smile hath too many teeth.");
+    const bet=await pick(i,"Thy wager; 0 to decline",0,Math.min(50,m));if(!bet)return m;
+    if(chance(.45)){write("Fortune smileth upon thee!");return safeAdd(m,bet*2);}
+    write("The dice favour the keeper, as ever.");return take(m,bet);
+  }},
+  {name:"The monastery scribe",fn:async(m,i,s)=>{
+    write("A monk requireth copies of a manuscript. Thy handwriting can scarce be worse than his.");
+    const c=await medievalChoice(i,"1 Copy for 25 coins | 2 Study diagrams of ancient machinery | 3 Leave",3);
+    if(c===1){write("Thou earnest 25 coins.");return safeAdd(m,25);}
+    if(c===2){s.repairKnowledge=true;write("Thou learnest the art of calibration. Repair success riseth to 90%!");}return m;
+  }},
+  {name:"The wandering peddler",fn:async(m,i,s)=>{
+    write("A peddler's cart overfloweth with strange metal and glittering stones.");
+    MACHINE_PARTS.forEach((p,n)=>write(`${n+1} - ${p}: 55 coins`));
+    const c=await pick(i,"Choose thy purchase; 0 to depart",0,3);if(!c)return m;
+    if(s.machineParts.includes(MACHINE_PARTS[c-1])){write("Thou already hast that part. Keep thy coins.");return m;}
+    if(m<55){write("Thy purse cannot meet his price.");return m;}
+    medievalGainPart(s,MACHINE_PARTS[c-1]);return take(m,55);
+  }},
+  {name:"The village healer",fn:async(m,i,s)=>{
+    write("A healer asketh thee to fetch herbs from the marsh.");
+    if(!await yes(i,"Wilt thou fetch the herbs?"))return m;
+    if(chance(.7)){medievalFavour(s,10);write("Thou earnest 40 coins and the village's gratitude.");return safeAdd(m,40);}
+    write("Thou returnest covered in leeches. Treatment costeth 10 coins.");return take(m,10);
+  }},
+  {name:"The royal goose",fn:async(m,i,s)=>{
+    write("The king's goose stealeth thy hat. A royal decree forbiddeth insulting it.");
+    const c=await medievalChoice(i,"1 Bow politely | 2 Chase the goose | 3 Offer bread for 5 coins",3);
+    if(c===1){write("The court delighteth in thy manners. A reward of 20 coins!");return safeAdd(m,20);}
+    if(c===3)return take(m,5);
+    medievalFavour(s,-5);write("The goose honketh treason. Thou art fined 25 coins.");return take(m,25);
+  }},
+  {name:"The bridge keeper",fn:async(m,i,s)=>{
+    write("A keeper demandeth 12 coins, or the answer to a riddle: what hath teeth but cannot bite?");
+    const c=await medievalChoice(i,"1 A comb | 2 A wolf | 3 Pay the toll",3);
+    if(c===1){write("'Well answered!' He granteth passage and 10 coins.");return safeAdd(m,10);}
+    write("The keeper collecteth his toll.");return take(m,12);
+  }},
+  {name:"The castle kitchen",fn:async(m,i,s)=>{
+    write("The royal cook hath mistaken salt for sugar. Thou art offered employment immediately.");
+    const c=await medievalChoice(i,"1 Wash pots for 30 coins | 2 Invent a new pie | 3 Leave",3);
+    if(c===1)return safeAdd(m,30);
+    if(c===2){if(chance(.5)){write("The lord adoreth thy pie! Reward: 80 coins.");return safeAdd(m,80);}write("Thy pie is declared a siege weapon. Fine: 15 coins.");return take(m,15);}return m;
+  }},
+  {name:"The ruined watchtower",fn:async(m,i,s)=>{
+    write("An abandoned watchtower containeth broken instruments and much suspicious creaking.");
+    if(!await yes(i,"Wilt thou search the ruins?"))return m;
+    if(chance(.65)){const missing=MACHINE_PARTS.filter(p=>!s.machineParts.includes(p));if(missing.length)medievalGainPart(s,missing[Math.floor(Math.random()*missing.length)]);else{write("Thou findest a purse of 35 coins.");return safeAdd(m,35);}return m;}
+    write("Rotten stairs give way. Thy bruises cost 20 coins to tend.");return take(m,20);
+  }},
+  {name:"The king's lost fork",fn:async(m,i,s)=>{
+    write("A merchant offereth the lost fork of the king for 15 coins. Most such relics are false.");
+    if(!await yes(i,"Wilt thou buy the relic?"))return m;
+    if(m<15){write("Thou lackest the coin.");return m;}
+    if(chance(.25)){s.kingsFork=true;write("The royal seal proveth true! Thou keepest THE KING’S FORK. It shall travel with thee through time.");return take(m,15);}
+    write("The fork beareth yesterday's maker's mark. Thou hast been swindled.");return take(m,15);
+  }},
+  {name:"The wool fair",fn:async(m,i,s)=>{
+    write("The wool fair is crowded. A flock of sheep hath formed an orderly queue.");
+    const c=await medievalChoice(i,"1 Carry bales for 20 coins | 2 Trade wool for 30 coins | 3 Leave",3);
+    if(c===1)return safeAdd(m,20);
+    if(c===2){if(m<30){write("Thou canst not afford the wool.");return m;}const sale=chance(.6)?75:10;write(`Thy wool selleth for ${sale} coins.`);return safeAdd(take(m,30),sale);}return m;
+  }},
+  {name:"The town crier",fn:async(m,i,s)=>{
+    write("The town crier hath lost his voice. Thou must announce the duke's new tax upon hats.");
+    const c=await medievalChoice(i,"1 Read the proclamation | 2 Mock the duke | 3 Decline",3);
+    if(c===1){write("Thou earnest 25 coins, though nobody liketh the news.");return safeAdd(m,25);}
+    if(c===2){if(chance(.4)){write("The crowd passeth a hat. Thou collectest 60 coins!");return safeAdd(m,60);}medievalFavour(s,-10);write("The duke's guards fine thee 35 coins.");return take(m,35);}return m;
+  }},
+  {name:"The clockmaker's workshop",fn:async(m,i,s)=>{
+    write("A clockmaker recognizeth thy broken engine as 'a most impertinent clock'.");
+    const c=await medievalChoice(i,"1 Help him for a missing part | 2 Study his repair plans | 3 Attempt thy machine's repair",3);
+    if(c===3)return repairTimeMachine(m,i,s);
+    if(c===2){s.repairKnowledge=true;write("His plans raise thy repair chance to 90%.");return m;}
+    const missing=MACHINE_PARTS.filter(p=>!s.machineParts.includes(p));
+    if(missing.length)medievalGainPart(s,missing[0]);else write("All thy parts are ready. He payeth thee for thy labour instead.");
+    return safeAdd(m,20);
+  }}
+];
+function chooseMedievalEvent(s) {
+  if(!s.medievalDeck.length){s.medievalDeck=MEDIEVAL_EVENTS.map((_,i)=>i);for(let j=s.medievalDeck.length-1;j>0;j--){const k=Math.floor(Math.random()*(j+1));[s.medievalDeck[j],s.medievalDeck[k]]=[s.medievalDeck[k],s.medievalDeck[j]];}}
+  return MEDIEVAL_EVENTS[s.medievalDeck.pop()];
+}
+(() => {
+  const originalState=createState, modernTurn=advanceTurn, modernRescue=rescueFromBankruptcy, modernStatus=printStatus;
+  createState=function(){return {...originalState(),era:"modern",eraTransition:false,modernCash:0,medievalTurns:0,machineParts:[],medievalDeck:[],medievalFavour:50,repairAttempts:0,repairKnowledge:false,medievalDebt:0};};
+  timeMachine=async function(money,input,s){
+    write("A scientist offers to send you back to 2010 to buy Bitcoin.");
+    if(!await yes(input,"Travel back?"))return money;
+    if(!await yes(input,"The trip costs half your money. Proceed?"))return money;
+    if(chance(.5)){write("SUCCESS! You return rich from early Bitcoin investments!");return cashLimit(money*10);}
+    write("ERROR! You arrive in 1347. The machine is breaking down!");
+    if(await yes(input,"Try an emergency repair?")){
+      if(chance(.5)){write("You repair it just in time and return with half your cash.");return Math.floor(money/2);}
+      write("The emergency repair fails.");
+    }
+    return enterMedieval(Math.floor(money/2),s);
+  };
+  advanceTurn=function(money,s){
+    if(s.eraTransition){s.eraTransition=false;s.turn++;return money;}
+    if(s.era!=="medieval")return modernTurn(money,s);
+    s.turn++;s.medievalTurns++;
+    if(s.medievalDebt>0&&money>10){const payment=Math.min(10,s.medievalDebt,money-1);s.medievalDebt-=payment;money-=payment;write(`Thou repayest ${payment} coins to the abbey.`);}
+    return cashLimit(money);
+  };
+  rescueFromBankruptcy=async function(money,input,s){
+    if(s.era!=="medieval")return modernRescue(money,input,s);
+    if(s.dead)return 0;if(money>0)return money;
+    write("Thy purse is empty. Thy modern holdings lie beyond thy reach.");
+    if(!await yes(input,"Accept the abbey's work and a 40-coin advance, owing 50 coins?")){write("Thy journey endeth here.");return 0;}
+    s.medievalDebt=safeAdd(s.medievalDebt,50);write("The abbey sheltereth thee. Small repayments shall follow on future turns.");return 40;
+  };
+  printStatus=function(money,s){
+    if(s.era!=="medieval")return modernStatus(money,s);
+    write(`THY PURSE: ${money} silver coins | Days in the past: ${s.medievalTurns} | Village favour: ${s.medievalFavour}/100`);
+    write(`Machine parts: ${s.machineParts.join(", ")||"none"} (${s.machineParts.length}/3)`);
+    write(`Still needed: ${MACHINE_PARTS.filter(p=>!s.machineParts.includes(p)).join(", ")||"all parts gathered"}. Repair: 75 coins; at least 5 medieval turns.`);
+    if(s.medievalDebt)write(`Debt to the abbey: ${s.medievalDebt} coins.`);
+  };
+})();
+
+// Accept compact inputs while retaining whole-dollar arithmetic.
+parseInteger = function(value) {
+  const match=String(value).trim().replaceAll(',', '').match(/^([+-]?\d+(?:\.\d+)?)\s*([KMBT]?)$/i);
+  if(!match)throw new Error('Not a whole number');
+  const n=Number(match[1])*({K:1e3,M:1e6,B:1e9,T:1e12}[match[2].toUpperCase()]||1);
+  if(!Number.isSafeInteger(n))throw new Error('Out of range or fractional dollar');
+  return n;
+};
+// Replace the old all-or-nothing Shark Tank multiplier with a management round.
+sharkTank = companyDecision;
+(() => {
+  const previousPool=eventPool;
+  eventPool=function(s){return previousPool(s).filter(id=>id!==11||s.hasStartup);};
 })();

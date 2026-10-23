@@ -10,7 +10,7 @@ let recent = [];
 
 function write(message = "", className = "") {
   const line = document.createElement("div");
-  line.textContent = String(message);
+  line.textContent = className === "command" ? String(message) : String(message).replace(/\$([0-9][0-9,]*(?:\.[0-9]+)?)([KMBT]?)/g, (original, amount, suffix) => suffix ? original : formatMoney(Number(amount.replaceAll(",", ""))));
   line.className = className;
   log.appendChild(line);
 
@@ -111,11 +111,12 @@ function setText(id, value) {
 }
 
 function dollars(value) {
-  return "$" + value.toLocaleString("en-US");
+  return formatMoney(value);
 }
 
 function updateStats(money, state) {
   setText("era", state.era === "medieval" ? "1347 — Medieval" : "Present day");
+  setText("relic", state.kingsFork ? "King’s fork" : "None");
   setText("machine", state.era === "medieval" ? state.machineParts.length + "/3 parts · " + state.medievalTurns + "/5 days" : "—");
   if (state.era === "medieval") {
     setText("cash", money.toLocaleString("en-US") + " coins");
@@ -137,6 +138,16 @@ function updateStats(money, state) {
   setText("peak", dollars(state.peakCash));
 }
 
+let bankruptcyTimer;
+function flashBankruptcy() {
+  const alert = document.getElementById("bankruptcy-alert");
+  if (!alert) return;
+  clearTimeout(bankruptcyTimer);
+  alert.classList.remove("active");
+  void alert.offsetWidth;
+  alert.classList.add("active");
+  bankruptcyTimer=setTimeout(()=>alert.classList.remove("active"),1800);
+}
 async function main() {
   const state = createState();
 
