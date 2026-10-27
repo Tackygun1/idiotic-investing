@@ -2181,7 +2181,7 @@ async function companyDecision(m,input,s){
   const c=await pick(input,'Choose your response',1,3);
   const good=options[c-1].good;
   s.managementScore=Math.max(-3,Math.min(3,(s.managementScore||0)+(good?1:-2)));
-  companyChange(s,good?.06:-.22,row[4]);
+  companyChange(s,good ? .35 + Math.max(0,s.managementScore)*.05 : -.10,row[4]);
   reputation(s,good?2:-4);
   return m;
 }
@@ -2189,35 +2189,40 @@ async function companyDecision(m,input,s){
   const oldState=createState;
   createState=function(){return {...oldState(),managementScore:0,managementDeck:[],kingsFork:false,vaultOpened:false,billionReached:false};};
   const oldStart=startCompany;
-  startCompany=async function(m,i,s){const had=s.hasStartup;m=await oldStart(m,i,s);if(!had&&s.hasStartup){s.startupValue=1000;s.managementScore=0;s.managementDeck=[];write('Initial company valuation: $1000. Growth requires sound decisions.');}return m;};
+  startCompany=async function(m,i,s){const had=s.hasStartup;m=await oldStart(m,i,s);if(!had&&s.hasStartup){s.startupValue=5000;s.managementScore=0;s.managementDeck=[];write('Initial company valuation: $5000. Earn dividends every turn; good decisions unlock major growth.');}return m;};
   companyIncome=function(m,s){
-    const value=s.startupValue;
-    const margin=.001+Math.min(3,s.products)*.001+Math.min(5,s.productQuality)*.0003+(s.managementScore||0)*.001;
-    const revenue=cashLimit(value*Math.max(0,margin)*Math.min(1.25,s.efficiency));
-    const costs=scaledCost(value,.001+s.employees*.0005,10);
-    const profit=revenue-costs;
-    const dividend=cashLimit(Math.max(0,profit)*s.ownership/100);
-    if(profit<0){companyChange(s,-.015,'Operating losses erode valuation.');m=take(m,-profit);}else m=safeAdd(m,dividend);
-    write(`Company revenue $${revenue}; operating costs $${costs}; your dividend $${dividend}.`);
-    return m;
+    if(!s.hasStartup || s.ownership<=0)return m;
+    // Net profit after payroll: passive ownership never drains personal cash.
+    // Overstaffing reduces the bonus, but cannot remove the baseline return.
+    const staffing=Math.min(1,4/Math.max(4,s.employees));
+    const bonus=(Math.min(5,s.productQuality)*.002 + Math.min(5,s.products)*.004 +
+      Math.max(0,s.managementScore||0)*.004)*staffing*Math.min(1.25,s.efficiency);
+    const profit=Math.max(25,cashLimit(s.startupValue*(.02+bonus)));
+    const dividend=Math.max(1,cashLimit(profit*s.ownership/100));
+    write(`Company net profit after operating costs: $${profit}; your dividend: $${dividend}.`);
+    return safeAdd(m,dividend);
   };
   launchProduct=async function(m,i,s){
     if(!s.hasStartup)return m;
     const ready=s.productQuality>=3&&s.employees>=2;
     write(`LAUNCH REVIEW: quality ${s.productQuality}/3 required; employees ${s.employees}/2 required. ${ready?'Testing and staffing are ready; customers are waiting.':'Launching now risks defective or unfulfilled orders.'}`);
+    write('Breakout target: quality 4+, two employees and management score 2+. Breakouts triple value and reset management score. Current score: '+(s.managementScore||0));
     const cost=scaledCost(s.startupValue,.08,100);
     const c=await pick(i,`1 Launch ($${cost}) | 2 Delay and resolve readiness`,1,2);
-    if(c===2){companyChange(s,ready?-.08:-.02,ready?'You miss a ready market window.':'A careful delay limits the damage. Train or hire before launching.');return m;}
+    if(c===2){write('Launch postponed. No fee or valuation penalty. Improve readiness and return when ready.');return m;}
     if(m<cost){write('Insufficient cash for launch.');return m;}
     m=take(m,cost);
-    if(!ready){s.lawsuitRisk+=2;companyChange(s,-.30,'The launch fails its readiness requirements.');return m;}
-    s.products=Math.min(10,s.products+1);const payout=cashLimit(s.startupValue*.10*s.ownership/100);
-    companyChange(s,.10,'Prepared launch succeeds.');write(`Launch distribution: $${payout}.`);return safeAdd(m,payout);
+    if(!ready){s.lawsuitRisk+=2;companyChange(s,-.15,'The launch fails its readiness requirements.');return m;}
+    const breakthrough=s.productQuality>=4&&s.employees>=2&&s.managementScore>=2;
+    s.products=Math.min(10,s.products+1);const payout=cashLimit(s.startupValue*(breakthrough?.35:.20)*s.ownership/100);
+    companyChange(s,breakthrough?2:.50,breakthrough?'BREAKOUT HIT! Excellent quality and management triple the company valuation.':'Prepared launch succeeds: valuation rises 50%.');
+    if(breakthrough)s.managementScore=0; // Earn the next breakout through fresh good decisions.
+    write(`Launch distribution: $${payout}.`);return safeAdd(m,payout);
   };
   hireEmployees=async function(m,i,s){
     if(!s.hasStartup)return m;
     const cost=scaledCost(s.startupValue,.04,100);
-    write(`Team: ${s.employees}. Payroll per employee: 0.05% of company value each turn. Two employees satisfy launch staffing.`);
+    write(`Team: ${s.employees}. Operating costs are included in net dividends. Two employees satisfy launch staffing; more than four dilute your bonus.`);
     const c=await pick(i,`1 Hire two ($${cost}) | 2 Fire one | 3 Keep team`,1,3);
     if(c===1){if(m<cost){write('Insufficient hiring cash.');return m;}s.employees+=2;return take(m,cost);}
     if(c===2&&s.employees>0){s.employees--;reputation(s,-3);}return m;
@@ -2280,7 +2285,7 @@ async function companyDecision(m,input,s){
   // EXTRA_EVENTS stores function references; refresh those captured before overrides.
   const replacements={reinvestCompany,companyContract,staffTraining,homeInsurance};
   for(const event of EXTRA_EVENTS)if(replacements[event.fn.name])event.fn=replacements[event.fn.name];
-  EXTRA_EVENTS.push({fn:companyDecision,eligible:s=>s.hasStartup,weight:12});
+  EXTRA_EVENTS.push({fn:companyDecision,eligible:s=>s.hasStartup,weight:3});
   // The medieval rescue wrapper delegates to this modern-only implementation.
   rescueFromBankruptcy=async function(m,i,s){
     if(s.dead)return 0;if(m>0)return m;
@@ -2551,3 +2556,58 @@ sharkTank = companyDecision;
   const previousPool=eventPool;
   eventPool=function(s){return previousPool(s).filter(id=>id!==11||s.hasStartup);};
 })();
+
+// Company pacing: no consecutive business chores and no majority-company pool.
+function isCompanyEvent(id){
+  if(id===11)return true;
+  if(id>=19&&id<39)return COMPANY_EVENT_IDS.has(id-19);
+  if(id>=39){const fn=EXTRA_EVENTS[id-39].fn;return [companyDecision,reinvestCompany,companyContract,staffTraining].includes(fn);}
+  return false;
+}
+chooseEvent=function(s){
+  const pool=eventPool(s), business=pool.filter(isCompanyEvent), other=pool.filter(id=>!isCompanyEvent(id));
+  const ready=s.hasStartup && s.turn-(s.lastCompanyEventTurn??-Infinity)>=4;
+  const useBusiness=ready&&business.length>0&&chance(.18);
+  const choices=useBusiness?business:other;
+  const total=choices.reduce((sum,id)=>sum+(id===1?.1:1),0);
+  let roll=Math.random()*total,selected=choices[choices.length-1];
+  for(const id of choices){roll-=id===1?.1:1;if(roll<0){selected=id;break;}}
+  if(useBusiness)s.lastCompanyEventTurn=s.turn;
+  return selected;
+};
+
+const CHESS_CHALLENGES=[
+ {scene:'Magnus checks your king. You see a tempting attack on his queen, but it leaves your king in check.', options:['Resolve the check before attacking','Attack the queen anyway','Skip your turn'],why:'Every legal move must leave your own king out of check.'},
+ {scene:'Your king is in double check from two pieces. Which type of response is required?',options:['Move the king to a safe square','Block just one checking line','Capture one checker with a pawn while leaving the other check'],why:'In double check, the king must move; stopping only one attack is insufficient.'},
+ {scene:'Your knight can move to a protected square that attacks both Magnus’s king and queen. Neither king nor another piece can capture the knight.',options:['Play the knight fork with check','Retreat the knight','Offer your queen for a pawn'],why:'The king must answer the check, giving you a chance to capture the queen next.'},
+ {scene:'Magnus offers a rook for your bishop. There is no hidden tactic and all other pieces remain safe. Using ordinary material values, which exchange gains material?',options:['Trade your bishop for his rook','Trade your queen for his rook','Give up the bishop for nothing'],why:'A rook is conventionally worth about five pawns and a bishop about three.'},
+ {scene:'Your king has never moved, but it is currently in check. You want to castle out of trouble.',options:['Make a legal check response; castling is forbidden now','Castle because your king has never moved','Castle on either side even through an attacked square'],why:'You cannot castle while in check, through check, or into check.'},
+ {scene:'Magnus has no legal moves, but his king is NOT in check. You announce your result.',options:['Stalemate: a draw','Checkmate: you win','Magnus must skip a turn'],why:'No legal moves without check is stalemate, not checkmate.'},
+ {scene:'Your pawn reaches the final rank. You want the strongest usual attacking piece, and there is no stalemate trap.',options:['Promote to a queen','Promote to a king','Keep it as an unmoving pawn'],why:'Promotion is mandatory; queen, rook, bishop or knight are the choices.'},
+ {scene:'Your queen and Magnus’s rook are lined up. His king stands behind his rook on the same file, with no intervening pieces. Can that rook move sideways and expose its king?',options:['No: the rook is absolutely pinned','Yes: pinned pieces ignore king safety','Only if Magnus moves quickly'],why:'A move that exposes your own king to check is illegal.'},
+ {scene:'A pawn advances two squares and lands beside your pawn, allowing en passant. You decide to play a different move first.',options:['The en passant opportunity expires','You can take en passant any later turn','The pawn must move backward'],why:'En passant is available only on the immediately following move.'},
+ {scene:'Magnus’s queen attacks your undefended rook. You can move the rook to safety without allowing a checkmate or losing anything else.',options:['Save the rook','Play an unrelated pawn move and lose the rook','Resign despite having a safe move'],why:'When no stronger threat exists, saving a hanging piece prevents a needless material loss.'}
+];
+async function magnusChess(m,input,s){
+  write('MAGNUS CARLSEN — CHESS EXHIBITION');
+  write('A fictional five-round tactics match. Magnus gives you candidate moves and challenges you to find the best response. This is a short chess challenge, not a full-board engine.');
+  const prize=Math.max(2500,cashLimit(m*.20));
+  write(`Free entry. Five correct: win $${prize}; four: draw and earn $${Math.floor(prize/4)}; fewer: Magnus wins, but your cash stays safe.`);
+  if(!await yes(input,'Accept the challenge?'))return m;
+  const deck=CHESS_CHALLENGES.slice();
+  for(let j=deck.length-1;j>0;j--){const k=Math.floor(Math.random()*(j+1));[deck[j],deck[k]]=[deck[k],deck[j]];}
+  let score=0;
+  for(let round=0;round<5;round++){
+    const puzzle=deck[round],answers=puzzle.options.map((text,i)=>({text,correct:i===0}));
+    for(let j=2;j>0;j--){const k=Math.floor(Math.random()*(j+1));[answers[j],answers[k]]=[answers[k],answers[j]];}
+    write(`ROUND ${round+1}/5: ${puzzle.scene}`);
+    answers.forEach((a,j)=>write(`${j+1} - ${a.text}`));
+    const choice=await pick(input,'Your response',1,3);
+    if(answers[choice-1].correct){score++;write('Good move! '+puzzle.why);}else write('Magnus spots the mistake. '+puzzle.why);
+  }
+  s.chessMatches=(s.chessMatches||0)+1;
+  if(score===5){s.chessWins=(s.chessWins||0)+1;reputation(s,8);write(`5/5! You win the exhibition challenge and $${prize}. Magnus requests a rematch after you stop celebrating.`);return safeAdd(m,prize);}
+  if(score===4){reputation(s,3);write(`4/5! Exhibition draw. Appearance bonus: $${Math.floor(prize/4)}.`);return safeAdd(m,Math.floor(prize/4));}
+  write(`${score}/5. Magnus wins the exhibition. He signs your chessboard; you promise to stop hanging pieces.`);return m;
+}
+EXTRA_EVENTS.push({fn:magnusChess,eligible:s=>s.era!=='medieval',weight:1});
