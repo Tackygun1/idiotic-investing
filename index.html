@@ -12,6 +12,9 @@
 .bankruptcy-message{color:#ff7676;font-weight:bold}
 @keyframes bankruptcy-pulse{from{background:rgba(220,0,0,.50)}to{background:rgba(170,0,0,.10)}}
 @media(prefers-reduced-motion:reduce){#bankruptcy-alert.active{animation:none}}
+
+.play-area{display:flex;align-items:flex-start;gap:16px}.terminal{flex:1;min-width:0}#chess-panel{flex:0 0 340px;padding:12px;background:var(--panel);border:1px solid var(--line);border-radius:12px}#chess-panel[hidden]{display:none}#chess-heading{font-size:16px;margin:0}#chess-side,.chess-help{font-size:12px}#chess-board{display:grid;grid-template-columns:repeat(8,1fr);border:2px solid #26342b}.chess-square{aspect-ratio:1;position:relative;display:flex;align-items:center;justify-content:center}.chess-square.light{background:#e6d7b6}.chess-square.dark{background:#78927c}.chess-coordinate{position:absolute;top:0;left:2px;color:#15271c;font:9px sans-serif}.chess-piece{font:32px/1 'DejaVu Sans','Segoe UI Symbol',serif;padding-top:5px}.white-piece{color:#fff;text-shadow:1px 0 #161c16,-1px 0 #161c16,0 1px #161c16,0 -1px #161c16}.black-piece{color:#111;text-shadow:0 1px #fff8}
+@media(max-width:800px){.play-area{display:block}#chess-panel{width:min(100%,360px);margin:0 auto 12px}.play-area:has(#chess-panel:not([hidden])) #log{height:24vh;min-height:140px}}
 </style>
 </head>
 <body><div id="bankruptcy-alert" role="alert"><span>BANKRUPTCY — FORCED ASSET SALE</span></div><main>
@@ -19,8 +22,10 @@
 <section class="stats" aria-label="Game status"><div class="stat"><span>Cash</span><strong id="cash">$0</strong></div><div class="stat"><span>Turn</span><strong id="turn">0</strong></div><div class="stat"><span>Reputation</span><strong id="rep">50 / 100</strong></div><div class="stat"><span>Home value</span><strong id="home">None</strong></div><div class="stat"><span>Company value</span><strong id="business">None</strong></div><div class="stat"><span>Peak cash</span><strong id="peak">$100</strong></div></section>
 <p class="era-status"><strong id="era">Present day</strong> · Time machine: <span id="machine">—</span></p>
 <p>Relic: <strong id="relic">None</strong></p>
+<div class="play-area">
+<section id="chess-panel" hidden aria-label="Chess position"><h2 id="chess-heading"></h2><p id="chess-side"></p><div id="chess-board" role="grid" aria-label="Chessboard"></div><p class="chess-help">Moves: queen to e5 · Qe5 · d1e5<br>skip concedes a position · resign ends the match</p></section>
 <section class="terminal" aria-label="Game terminal"><div class="bar">LIVE SESSION / <span id="result">waiting for player</span></div><div id="log" role="log" aria-live="polite" aria-relevant="additions" tabindex="0"></div>
-<form id="command"><label for="answer">&gt;<span hidden> Your answer</span></label><input id="answer" aria-label="Your answer" placeholder="Type your answer…" autocomplete="off" autocapitalize="off" spellcheck="false" maxlength="160"><button id="send">Send ↵</button></form><div id="quick" aria-label="Quick answers"></div></section>
+<form id="command"><label for="answer">&gt;<span hidden> Your answer</span></label><input id="answer" aria-label="Your answer" placeholder="Type your answer…" autocomplete="off" autocapitalize="off" spellcheck="false" maxlength="160"><button id="send">Send ↵</button></form><div id="quick" aria-label="Quick answers"></div></section></div>
 <footer>Enter to submit · Each player has a separate game · Refreshing resets everything</footer>
 <noscript>This game needs JavaScript enabled in your browser.</noscript>
-</main><script src="game.js?v=company-fun-4"></script><script src="ui.js?v=company-fun-4"></script></body></html>
+</main><script src="game.js?v=chess-tactics-5"></script><script src="ui.js?v=chess-tactics-5"></script></body></html>

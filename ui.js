@@ -317,3 +317,24 @@ main().catch(error => {
   answer.disabled = true;
   sendButton.disabled = true;
 });
+function renderChessPosition(fen,color,title){
+  const panel=document.getElementById('chess-panel'),board=document.getElementById('chess-board');
+  if(!panel||!board)return;
+  panel.hidden=false;document.getElementById('chess-heading').textContent=title;
+  document.getElementById('chess-side').textContent='You play '+color+'. Coordinates are printed on every square. Type your move below.';
+  const squares={};fen.split(' ')[0].split('/').forEach((row,r)=>{let file=0;for(const piece of row){if(/\d/.test(piece))file+=Number(piece);else squares['abcdefgh'[file++]+(8-r)]=piece;}});
+  const symbols={k:'♚',q:'♛',r:'♜',b:'♝',n:'♞',p:'♟',K:'♔',Q:'♕',R:'♖',B:'♗',N:'♘',P:'♙'};
+  const names={k:'king',q:'queen',r:'rook',b:'bishop',n:'knight',p:'pawn'};
+  board.replaceChildren();
+  const files=color==='black'?'hgfedcba':'abcdefgh',ranks=color==='black'?[1,2,3,4,5,6,7,8]:[8,7,6,5,4,3,2,1];
+  for(const rank of ranks)for(const file of files){
+    const square=file+rank,piece=squares[square],cell=document.createElement('div');
+    cell.className='chess-square '+(('abcdefgh'.indexOf(file)+rank)%2===0?'light':'dark');
+    cell.setAttribute('role','gridcell');
+    cell.setAttribute('aria-label',square+(piece?': '+(piece===piece.toUpperCase()?'White ':'Black ')+names[piece.toLowerCase()]:': empty'));
+    const coordinate=document.createElement('span');coordinate.className='chess-coordinate';coordinate.textContent=square;cell.appendChild(coordinate);
+    if(piece){const glyph=document.createElement('span');glyph.className='chess-piece '+(piece===piece.toUpperCase()?'white-piece':'black-piece');glyph.textContent=symbols[piece];glyph.setAttribute('aria-hidden','true');cell.appendChild(glyph);}
+    board.appendChild(cell);
+  }
+}
+function hideChessPosition(){const panel=document.getElementById('chess-panel');if(panel)panel.hidden=true;}
